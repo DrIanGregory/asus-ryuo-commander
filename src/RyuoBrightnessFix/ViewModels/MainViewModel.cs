@@ -9,10 +9,8 @@ using Serilog.Events;
 namespace RyuoBrightnessFix.ViewModels;
 
 /// <summary>
-/// The single view model behind <c>MainWindow</c>. Owns app settings, the device
-/// command config, the brightness fixer and the resume monitor. Settings toggles
-/// persist immediately and apply their side effects (startup registration, tray
-/// visibility, resume monitoring).
+/// The single view model behind <c>MainWindow</c>. Sets the Ryuo IV LCD backlight over adb
+/// (the actual fix), persists settings, and re-applies brightness on resume.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class MainViewModel : ObservableObject, IDisposable
@@ -22,13 +20,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private readonly ILogger _log;
     private readonly AppSettings _settings;
     private readonly StartupRegistrationService _startup;
-    private readonly BrightnessFixer _fixer;
-    private readonly DeviceDiscoveryService _discovery;
-    private readonly DeviceCycler _deviceCycler;
     private readonly BacklightService _backlight;
     private readonly Queue<string> _logLines = new();
 
-    private RyuoConfig? _config;
     private ResumeMonitor? _resumeMonitor;
 
     /// <summary>Raised when the tray icon visibility should change (App owns the tray).</summary>
@@ -37,28 +31,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public RelayCommand ApplyBrightnessCommand { get; }
     public RelayCommand Restore100Command { get; }
     public RelayCommand ReloadCommand { get; }
-    public RelayCommand ChooseConfigCommand { get; }
-    public RelayCommand RestartDeviceCommand { get; }
-
-    /// <summary>The Setup/Calibration tab's view model.</summary>
-    public CalibrationViewModel Calibration { get; }
 
     public MainViewModel(ILogger log, UiLogSink uiSink, AppSettings settings, StartupRegistrationService startup)
     {
         _log = log.ForContext<MainViewModel>();
         _settings = settings;
         _startup = startup;
-        _discovery = new DeviceDiscoveryService(log);
-        _fixer = new BrightnessFixer(_discovery, log);
-        _deviceCycler = new DeviceCycler(log);
         _backlight = new BacklightService(log);
-
-        Calibration = new CalibrationViewModel(log, _discovery, _fixer, settings, () => _config?.ResumeDelayMs ?? 10_000);
-        Calibration.CalibrationSaved += () =>
-        {
-            ReloadConfig();
-            SelectedTabIndex = ControlTabIndex; // jump to the Control tab once calibrated
-        };
 
         // Mirror persisted settings into bindable fields.
         _brightnessPercent = settings.TargetBrightnessPercent;
@@ -67,29 +46,23 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _minimizeToTrayOnClose = settings.MinimizeToTrayOnClose;
         _showTrayIcon = settings.ShowTrayIcon;
         _autoFixOnResume = settings.AutoFixOnResume;
-        _restartDeviceOnResume = settings.RestartDeviceOnResume;
 
         ApplyBrightnessCommand = new RelayCommand(() => ApplyBrightness(BrightnessPercent), () => CanControlDevice);
         Restore100Command = new RelayCommand(() => ApplyBrightness(100), () => CanControlDevice);
-        ReloadCommand = new RelayCommand(ReloadConfig);
-        ChooseConfigCommand = new RelayCommand(ChooseConfig);
-        RestartDeviceCommand = new RelayCommand(RestartDevice);
+        ReloadCommand = new RelayCommand(RefreshDevice);
 
         uiSink.LineWritten += OnLogLine;
 
-        ReloadConfig();
+        RefreshDevice();
     }
 
     // ---------------------------------------------------------------- tabs & status
 
-    public const int SetupTabIndex = 0;
-    public const int ControlTabIndex = 1;
-
     private int _selectedTabIndex;
     public int SelectedTabIndex { get => _selectedTabIndex; set => SetProperty(ref _selectedTabIndex, value); }
 
-    private CalibrationStatus _status = CalibrationStatus.NoDevice;
-    public CalibrationStatus Status
+    private DeviceStatusKind _status = DeviceStatusKind.NoDevice;
+    public DeviceStatusKind Status
     {
         get => _status;
         private set
@@ -98,13 +71,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             {
                 OnPropertyChanged(nameof(StatusText));
                 OnPropertyChanged(nameof(StatusBrush));
-                OnPropertyChanged(nameof(IsCalibrated));
             }
         }
     }
 
     public string StatusText => Status.ToText();
-    public bool IsCalibrated => Status == CalibrationStatus.Calibrated;
 
     public System.Windows.Media.Brush StatusBrush
     {
@@ -119,9 +90,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             catch { return System.Windows.Media.Brushes.Gray; }
         }
     }
-
-    private void UpdateStatus()
-        => Status = CanControlDevice ? CalibrationStatus.Calibrated : CalibrationStatus.NoDevice;
 
     // ---------------------------------------------------------------- bindable state
 
@@ -210,7 +178,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     }
 
     private bool _sliderEnabled;
-    /// <summary>True only when a brightnessControl template exists (variable brightness possible).</summary>
     public bool SliderEnabled { get => _sliderEnabled; private set => SetProperty(ref _sliderEnabled, value); }
 
     private string _configPathDisplay = "";
@@ -243,7 +210,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public void RestoreToTarget() => ApplyBrightness(BrightnessPercent);
 
     /// <summary>Refresh whether the Ryuo LCD is reachable over adb.</summary>
-    private void ReloadConfig()
+    private void RefreshDevice()
     {
         ConfigPathDisplay = _backlight.AdbAvailable
             ? "Using ASUS Info Hub adb (Android backlight control)."
@@ -287,55 +254,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
         finally
         {
-            UpdateStatus();
+            Status = CanControlDevice ? DeviceStatusKind.Connected : DeviceStatusKind.NoDevice;
         }
-    }
-
-    private void ChooseConfig()
-    {
-        var dialog = new Microsoft.Win32.OpenFileDialog
-        {
-            Title = "Choose device command config (ryuo.json)",
-            Filter = "JSON config (*.json)|*.json|All files (*.*)|*.*",
-            InitialDirectory = Directory.Exists(AppConstants.ExeDir) ? AppConstants.ExeDir : null,
-        };
-
-        if (dialog.ShowDialog() == true)
-        {
-            _settings.DeviceConfigPath = dialog.FileName;
-            SaveSettings();
-            ReloadConfig();
-        }
-    }
-
-    // ---------------------------------------------------------------- device restart (software replug)
-
-    private bool _restartDeviceOnResume;
-    public bool RestartDeviceOnResume
-    {
-        get => _restartDeviceOnResume;
-        set
-        {
-            if (!SetProperty(ref _restartDeviceOnResume, value)) return;
-            _settings.RestartDeviceOnResume = value;
-            SaveSettings();
-            RestartResumeMonitor();
-        }
-    }
-
-    private string _restartDeviceStatus = "";
-    public string RestartDeviceStatus { get => _restartDeviceStatus; private set => SetProperty(ref _restartDeviceStatus, value); }
-
-    private void RestartDevice()
-    {
-        RestartDeviceStatus = "Restarting the Ryuo device…";
-        _log.Information("Manual software-replug requested.");
-        Task.Run(() =>
-        {
-            var (ok, msg) = _deviceCycler.RestartRyuo();
-            Application.Current?.Dispatcher.BeginInvoke(() =>
-                RestartDeviceStatus = (ok ? "✓ " : "✗ ") + msg);
-        });
     }
 
     // ---------------------------------------------------------------- resume monitor

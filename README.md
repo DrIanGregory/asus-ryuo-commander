@@ -24,7 +24,7 @@ The fix is to write the backlight back to full over **adb**. The Ryuo exposes an
 adb shell "echo 256 > /sys/class/backlight/backlight/brightness"
 ```
 
-> **Why not a USB/HID command?** Brightness is **not** a HID report on this device — changing the slider in Armoury Crate sends no USB command at all. It is purely an Android-side backlight setting, reachable only over adb. (Earlier capture/replay code in this repo was the wrong layer and is superseded by the adb approach.)
+> **Why not a USB/HID command?** Brightness is **not** a HID report on this device — changing the slider in Armoury Crate sends no USB command at all. It is purely an Android-side backlight setting, reachable only over adb. (An earlier USB/HID capture-and-replay approach was the wrong layer; this app talks to the Android backlight directly.)
 
 ---
 
@@ -44,7 +44,9 @@ adb shell "echo 256 > /sys/class/backlight/backlight/brightness"
 2. **Brightness** tab: drag the slider and click **Apply**, or **100%** for full. Tick **"Restore this brightness automatically after sleep."**
 3. **Settings** tab: tick **Start with Windows**, **Start minimized**, and **Show tray icon** so it runs silently in the tray and self-heals the brightness on every wake.
 
-The header shows the live state, e.g. *"Ryuo IV LCD connected (backlight 256/256)"* with a green **Calibrated** badge when adb can reach the panel.
+![Settings tab](docs/settings-tab.png)
+
+The header shows the live state, e.g. *"Ryuo IV LCD connected (backlight 256/256)"* with a green **Connected** badge when adb can reach the panel.
 
 ### Start in the tray only (no taskbar button)
 

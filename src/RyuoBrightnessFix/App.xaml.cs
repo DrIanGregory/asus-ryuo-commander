@@ -1,7 +1,6 @@
 using System.Windows;
 using RyuoBrightnessFix.Models;
 using RyuoBrightnessFix.Services;
-using RyuoBrightnessFix.Util;
 using RyuoBrightnessFix.ViewModels;
 using RyuoBrightnessFix.Views;
 using Serilog;
@@ -9,10 +8,7 @@ using Serilog.Events;
 
 namespace RyuoBrightnessFix;
 
-/// <summary>
-/// Application entry point. Routes to the CLI (Program.RunCli) when invoked with a
-/// recognized verb, otherwise launches the WPF tray GUI.
-/// </summary>
+/// <summary>Application entry point — a single-instance WPF tray app.</summary>
 public partial class App : Application
 {
     private Mutex? _singleInstanceMutex;
@@ -25,15 +21,6 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
-
-        // --- CLI / headless mode (also used by the scheduled task action) ---
-        if (CliCommands.IsCliInvocation(e.Args))
-        {
-            ConsoleHelper.AttachToParentConsole();
-            int code = Program.RunCli(e.Args);
-            Environment.Exit(code);
-            return;
-        }
 
         // Capture any unhandled GUI exception so a crash leaves a diagnosable trail.
         DispatcherUnhandledException += (_, ev) =>

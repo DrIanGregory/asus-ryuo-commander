@@ -1,10 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- WinExe = no console window for the GUI; we AttachConsole on demand for CLI mode. -->
     <OutputType>WinExe</OutputType>
     <!-- net8.0-windows + WPF + WinForms: WPF for the UI, WinForms NotifyIcon for the tray,
-         SystemEvents for resume detection, Win32 principal APIs for admin detection. -->
+         SystemEvents for resume detection. -->
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
@@ -17,19 +16,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="HidSharp" Version="2.1.0" />
     <PackageReference Include="Serilog" Version="4.2.0" />
-    <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
     <PackageReference Include="Serilog.Sinks.File" Version="6.0.0" />
     <PackageReference Include="Microsoft.Win32.SystemEvents" Version="8.0.0" />
-  </ItemGroup>
-
-  <!-- Ship the example config next to the binary for convenience. -->
-  <ItemGroup>
-    <None Include="..\..\ryuo.example.json" Condition="Exists('..\..\ryuo.example.json')">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <Link>ryuo.example.json</Link>
-    </None>
   </ItemGroup>
 
 </Project>

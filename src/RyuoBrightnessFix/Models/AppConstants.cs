@@ -13,8 +13,6 @@ public static class AppConstants
     public const string SingleInstanceMutex = @"Global\RyuoBrightnessFix.SingleInstance";
 
     public const string SettingsFileName = "settings.json";
-    public const string DeviceConfigFileName = "ryuo.json";
-    public const string ExampleConfigFileName = "ryuo.example.json";
 
     /// <summary>%APPDATA%\RyuoBrightnessFix</summary>
     public static string AppDataDir =>
