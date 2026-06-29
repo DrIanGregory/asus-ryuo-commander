@@ -1,0 +1,16 @@
+## .NET build output
+bin/
+obj/
+*.user
+
+## Logs produced at runtime
+logs/
+*.log
+
+## Your real config may contain device serials — keep it out of source control.
+ryuo.json
+
+## VS / Rider
+.vs/
+.idea/
+*.suo

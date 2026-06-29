@@ -1,0 +1,121 @@
+<Window x:Class="RyuoBrightnessFix.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:util="clr-namespace:RyuoBrightnessFix.Util"
+        Title="Ryuo Brightness Fix"
+        Width="490" Height="560"
+        MinWidth="460" MinHeight="480"
+        WindowStartupLocation="Manual"
+        Background="{StaticResource WindowBackgroundBrush}"
+        FontFamily="Segoe UI"
+        TextOptions.TextFormattingMode="Display">
+
+    <Window.Resources>
+        <util:BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <util:BooleanToVisibilityConverter x:Key="InverseBoolToVis" Invert="True" />
+        <util:StringToVisibilityConverter x:Key="NonEmptyToVis" />
+    </Window.Resources>
+
+    <Grid Margin="18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- ===== Header with status badge ===== -->
+        <Grid Grid.Row="0" Margin="0,0,0,14">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="0">
+                <TextBlock Text="Ryuo Brightness Fix" FontSize="20" FontFamily="Segoe UI Semibold" />
+                <TextBlock Text="{Binding DeviceStatus}" Style="{StaticResource SubtleText}" Margin="0,4,0,0" />
+            </StackPanel>
+            <Border Grid.Column="1" Style="{StaticResource StatusBadge}" Background="#FF202024"
+                    BorderBrush="{Binding StatusBrush}">
+                <StackPanel Orientation="Horizontal">
+                    <Ellipse Width="9" Height="9" VerticalAlignment="Center" Fill="{Binding StatusBrush}" />
+                    <TextBlock Text="{Binding StatusText}" Margin="7,0,0,0" VerticalAlignment="Center"
+                               FontFamily="Segoe UI Semibold" Foreground="{Binding StatusBrush}" />
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <!-- ===== Tabs ===== -->
+        <TabControl Grid.Row="1" SelectedIndex="{Binding SelectedTabIndex, Mode=TwoWay}">
+
+            <!-- ================= BRIGHTNESS ================= -->
+            <TabItem Header="Brightness">
+                <StackPanel>
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel>
+                            <TextBlock Text="LCD Brightness" Style="{StaticResource HeaderText}" />
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <Slider Grid.Column="0" Minimum="0" Maximum="100"
+                                        Value="{Binding BrightnessPercent, Mode=TwoWay}"
+                                        IsEnabled="{Binding SliderEnabled}" VerticalAlignment="Center" />
+                                <TextBlock Grid.Column="1" Width="52" TextAlignment="Right" VerticalAlignment="Center"
+                                           FontSize="18" FontFamily="Segoe UI Semibold"
+                                           Text="{Binding BrightnessPercent, StringFormat={}{0}%}" />
+                            </Grid>
+                            <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                                <Button Content="Apply" Style="{StaticResource AccentButton}"
+                                        Command="{Binding ApplyBrightnessCommand}" Width="110" />
+                                <Button Content="100%" Style="{StaticResource SecondaryButton}"
+                                        Command="{Binding Restore100Command}" Width="90" Margin="10,0,0,0" />
+                            </StackPanel>
+                            <CheckBox Content="Restore this brightness automatically after sleep"
+                                      IsChecked="{Binding AutoFixOnResume}" Margin="0,14,0,0" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource Card}">
+                        <TextBlock Style="{StaticResource SubtleText}" TextWrapping="Wrap"
+                                   Text="Sets the Ryuo IV LCD backlight directly through ASUS's adb. After the PC wakes from sleep the panel drops to ~5% while Armoury Crate still shows 100% — Apply (or auto-restore) puts it back." />
+                    </Border>
+                </StackPanel>
+            </TabItem>
+
+            <!-- ================= SETTINGS ================= -->
+            <TabItem Header="Settings">
+                <StackPanel>
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel>
+                            <TextBlock Text="Startup &amp; System Tray" Style="{StaticResource HeaderText}" />
+                            <CheckBox Content="Start with Windows" IsChecked="{Binding StartWithWindows}" />
+                            <CheckBox Content="Start minimized" IsChecked="{Binding StartMinimized}" />
+                            <CheckBox Content="Minimize to tray when closing" IsChecked="{Binding MinimizeToTrayOnClose}" />
+                            <CheckBox Content="Show tray icon" IsChecked="{Binding ShowTrayIcon}" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel>
+                            <TextBlock Text="Activity" Style="{StaticResource HeaderText}" />
+                            <TextBox Style="{StaticResource LogBox}" Height="140" Text="{Binding LogText, Mode=OneWay}"
+                                     x:Name="LogTextBox" TextChanged="LogTextBox_TextChanged" />
+                        </StackPanel>
+                    </Border>
+
+                    <Grid Margin="0,4,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Style="{StaticResource SubtleText}" VerticalAlignment="Center"
+                                   TextTrimming="CharacterEllipsis" ToolTip="{Binding ConfigPathDisplay}"
+                                   Text="{Binding ConfigPathDisplay}" />
+                        <Button Grid.Column="1" Content="Re-check LCD" Style="{StaticResource SecondaryButton}"
+                                Command="{Binding ReloadCommand}" Padding="12,6" Margin="8,0,0,0" />
+                    </Grid>
+                </StackPanel>
+            </TabItem>
+
+        </TabControl>
+    </Grid>
+</Window>

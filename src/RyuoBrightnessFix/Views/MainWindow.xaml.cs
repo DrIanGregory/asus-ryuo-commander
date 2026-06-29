@@ -1,0 +1,135 @@
+using System.ComponentModel;
+using System.Windows;
+using System.Windows.Threading;
+using RyuoBrightnessFix.ViewModels;
+
+namespace RyuoBrightnessFix.Views;
+
+public partial class MainWindow : Window
+{
+    private readonly MainViewModel _vm;
+    private readonly DispatcherTimer _savePlacementTimer;
+    private bool _forceClose;
+
+    public MainWindow(MainViewModel vm)
+    {
+        InitializeComponent();
+        _vm = vm;
+        DataContext = vm;
+
+        // Debounce placement saves so dragging/resizing doesn't hammer the disk.
+        _savePlacementTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
+        _savePlacementTimer.Tick += (_, _) => { _savePlacementTimer.Stop(); PersistPlacement(); };
+
+        SourceInitialized += (_, _) => RestorePlacement();
+        LocationChanged += (_, _) => QueueSavePlacement();
+        SizeChanged += (_, _) => QueueSavePlacement();
+        StateChanged += (_, _) => QueueSavePlacement();
+    }
+
+    /// <summary>Close the window for real (used by the tray "Exit" / app shutdown).</summary>
+    public void ForceClose()
+    {
+        _forceClose = true;
+        Close();
+    }
+
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        // Capture the latest geometry before we hide or exit.
+        PersistPlacement();
+
+        // X button: hide to tray when configured, otherwise exit the whole app.
+        if (!_forceClose && _vm.MinimizeToTrayOnClose && _vm.ShowTrayIcon)
+        {
+            e.Cancel = true;
+            Hide();
+            return;
+        }
+
+        base.OnClosing(e);
+        if (!_forceClose)
+            Application.Current.Shutdown();
+    }
+
+    // ---------------------------------------------------------------- placement persistence
+
+    private void RestorePlacement()
+    {
+        var p = _vm.GetWindowPlacement();
+        if (p.Width is double w && p.Height is double h && w > 0 && h > 0)
+        {
+            Width = w;
+            Height = h;
+
+            if (p.Left is double l && p.Top is double t && IsOnScreen(l, t, w, h))
+            {
+                Left = l;
+                Top = t;
+            }
+            else
+            {
+                CenterOnScreen();
+            }
+        }
+        else
+        {
+            CenterOnScreen();
+        }
+
+        if (p.Maximized)
+            WindowState = WindowState.Maximized;
+    }
+
+    private void PersistPlacement()
+    {
+        // Don't capture a minimized window's (meaningless) bounds.
+        if (WindowState == WindowState.Minimized) return;
+
+        MainViewModel.WindowPlacement placement;
+        if (WindowState == WindowState.Maximized)
+        {
+            var r = RestoreBounds; // the "normal" bounds to return to on un-maximize
+            placement = new MainViewModel.WindowPlacement(r.Left, r.Top, r.Width, r.Height, true);
+        }
+        else
+        {
+            placement = new MainViewModel.WindowPlacement(Left, Top, ActualWidth, ActualHeight, false);
+        }
+
+        _vm.SaveWindowPlacement(placement);
+    }
+
+    private void QueueSavePlacement()
+    {
+        _savePlacementTimer.Stop();
+        _savePlacementTimer.Start();
+    }
+
+    /// <summary>True when most of the saved rectangle lands on the current virtual desktop
+    /// (guards against a monitor that's since been disconnected).</summary>
+    private static bool IsOnScreen(double left, double top, double width, double height)
+    {
+        var vsLeft = SystemParameters.VirtualScreenLeft;
+        var vsTop = SystemParameters.VirtualScreenTop;
+        var vsRight = vsLeft + SystemParameters.VirtualScreenWidth;
+        var vsBottom = vsTop + SystemParameters.VirtualScreenHeight;
+
+        // Require the title bar area to be visible so the window stays draggable.
+        double visibleX = Math.Min(left + width, vsRight) - Math.Max(left, vsLeft);
+        double visibleTop = top;
+        return visibleX > 80 && visibleTop >= vsTop - 1 && visibleTop < vsBottom - 20;
+    }
+
+    private void CenterOnScreen()
+    {
+        Left = SystemParameters.VirtualScreenLeft + (SystemParameters.VirtualScreenWidth - Width) / 2;
+        Top = SystemParameters.VirtualScreenTop + (SystemParameters.VirtualScreenHeight - Height) / 2;
+    }
+
+    private void LogTextBox_TextChanged(object sender, RoutedEventArgs e)
+    {
+        // Keep the newest log line in view.
+        LogTextBox.ScrollToEnd();
+    }
+}

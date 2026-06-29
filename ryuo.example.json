@@ -1,0 +1,28 @@
+{
+  "device": {
+    "vendorId": "0x0B05",
+    "productId": "AUTO_OR_USER_FILLED",
+    "usagePage": null,
+    "usage": null,
+    "pathContains": "RYUO",
+    "serialNumber": null
+  },
+  "brightness100Sequence": [
+    {
+      "name": "Set LCD brightness 100",
+      "reportType": "feature",
+      "reportId": 0,
+      "hex": "00 AA BB CC DD EE FF",
+      "delayMs": 250
+    }
+  ],
+  "brightnessControl": {
+    "reportType": "output",
+    "reportId": 0,
+    "hexTemplate": "00 31 {b} 64",
+    "scale": "raw0To255",
+    "delayMs": 0
+  },
+  "resumeDelayMs": 10000,
+  "dryRun": true
+}
