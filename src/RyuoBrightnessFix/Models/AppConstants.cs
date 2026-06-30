@@ -18,5 +18,8 @@ public static class AppConstants
     public static string AppDataDir =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), AppName);
 
+    /// <summary>%APPDATA%\RyuoBrightnessFix\logs</summary>
+    public static string LogDir => Path.Combine(AppDataDir, "logs");
+
     public static string ExeDir => AppContext.BaseDirectory;
 }

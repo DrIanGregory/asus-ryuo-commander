@@ -4,6 +4,7 @@ using RyuoBrightnessFix.Services;
 using RyuoBrightnessFix.ViewModels;
 using RyuoBrightnessFix.Views;
 using Serilog;
+using Serilog.Core;
 using Serilog.Events;
 
 namespace RyuoBrightnessFix;
@@ -13,6 +14,7 @@ public partial class App : Application
 {
     private Mutex? _singleInstanceMutex;
     private UiLogSink? _uiSink;
+    private LoggingLevelSwitch? _levelSwitch;
     private MainViewModel? _viewModel;
     private TrayIconService? _tray;
     private MainWindow? _window;
@@ -57,18 +59,27 @@ public partial class App : Application
     private void StartGui()
     {
         // Logger: rolling file + the in-app log pane sink.
-        var logDir = Path.Combine(AppConstants.AppDataDir, "logs");
+        var logDir = AppConstants.LogDir;
         Directory.CreateDirectory(logDir);
         _uiSink = new UiLogSink();
 
+        var settings = AppSettings.Load();
+
+        // Runtime-switchable level so the Debug-logging checkbox can crank detail up/down
+        // without restarting the app. Verbose when debugging, Information otherwise.
+        _levelSwitch = new LoggingLevelSwitch(
+            settings.DebugLogging ? LogEventLevel.Verbose : LogEventLevel.Information);
+
         Log.Logger = new LoggerConfiguration()
-            .MinimumLevel.Is(LogEventLevel.Information)
+            .MinimumLevel.ControlledBy(_levelSwitch)
             .WriteTo.File(Path.Combine(logDir, "ryuo-.log"), rollingInterval: RollingInterval.Day,
                 outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] {SourceContext} {Message:lj}{NewLine}{Exception}")
             .WriteTo.UiSink(_uiSink)
             .CreateLogger();
 
-        var settings = AppSettings.Load();
+        Log.Information("===== {App} starting. Debug logging = {Debug}. Log folder: {Dir} =====",
+            AppConstants.DisplayName, settings.DebugLogging, logDir);
+
         var startup = new StartupRegistrationService(Log.Logger);
 
         // Keep the saved "start with windows" flag honest with the registry's actual state.
@@ -77,7 +88,7 @@ public partial class App : Application
             startup.Set(settings.StartWithWindows);
         }
 
-        _viewModel = new MainViewModel(Log.Logger, _uiSink, settings, startup);
+        _viewModel = new MainViewModel(Log.Logger, _uiSink, settings, startup, _levelSwitch);
 
         // Tray icon (WinForms NotifyIcon).
         _tray = new TrayIconService { Visible = settings.ShowTrayIcon };

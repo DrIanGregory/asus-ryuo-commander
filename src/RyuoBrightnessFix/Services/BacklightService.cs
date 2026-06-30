@@ -28,6 +28,11 @@ public sealed class BacklightService
         _workingDir = _adb is not null
             ? Directory.GetParent(Path.GetDirectoryName(_adb)!)?.FullName ?? Path.GetDirectoryName(_adb)!
             : "";
+
+        if (_adb is not null)
+            _log.Debug("adb located: {Adb} (working dir {Dir}).", _adb, _workingDir);
+        else
+            _log.Warning("adb NOT found in any known ASUS Info Hub location.");
     }
 
     public bool AdbAvailable => _adb is not null;
@@ -50,7 +55,10 @@ public sealed class BacklightService
     {
         if (_adb is null) return false;
         var (exit, outp, _) = Run(new[] { "get-state" }, TimeSpan.FromSeconds(8));
-        return exit == 0 && outp.Trim().Equals("device", StringComparison.OrdinalIgnoreCase);
+        bool connected = exit == 0 && outp.Trim().Equals("device", StringComparison.OrdinalIgnoreCase);
+        _log.Debug("DeviceConnected: get-state exit={Exit} state='{State}' -> {Connected}.",
+            exit, outp.Trim(), connected);
+        return connected;
     }
 
     /// <summary>Current backlight value (0–256), or null on failure.</summary>
@@ -58,8 +66,18 @@ public sealed class BacklightService
     {
         if (_adb is null) return null;
         var (exit, outp, _) = Run(new[] { "shell", "cat " + Node }, TimeSpan.FromSeconds(8));
-        if (exit != 0) return null;
-        return int.TryParse(outp.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) ? v : null;
+        if (exit != 0)
+        {
+            _log.Debug("GetBacklight: read failed (exit={Exit}).", exit);
+            return null;
+        }
+        if (int.TryParse(outp.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v))
+        {
+            _log.Debug("GetBacklight: {Value}/{Max}.", v, MaxBacklight);
+            return v;
+        }
+        _log.Debug("GetBacklight: unparseable output '{Out}'.", outp.Trim());
+        return null;
     }
 
     /// <summary>
@@ -78,9 +96,14 @@ public sealed class BacklightService
 
         value = Math.Clamp(value, 0, MaxBacklight);
         var writeTimeout = verify ? TimeSpan.FromSeconds(10) : TimeSpan.FromSeconds(4);
+        _log.Debug("SetBacklight: writing {Value}/{Max} (verify={Verify}, timeout={Timeout}s).",
+            value, MaxBacklight, verify, writeTimeout.TotalSeconds);
         var (exit, _, err) = Run(new[] { "shell", $"echo {value} > {Node}" }, writeTimeout);
         if (exit != 0)
+        {
+            _log.Warning("SetBacklight: write failed (exit={Exit}, err='{Err}').", exit, err.Trim());
             return (false, "adb write failed: " + (err.Trim().Length > 0 ? err.Trim() : $"exit {exit}"));
+        }
 
         if (!verify)
         {
@@ -104,6 +127,8 @@ public sealed class BacklightService
         percent = Math.Clamp(percent, 0, 100);
         int raw = (int)Math.Round(percent * MaxBacklight / 100.0);
         if (percent > 0 && raw < 1) raw = 1;
+        _log.Debug("SetPercent: {Percent}% -> raw {Raw}/{Max} (verify={Verify}).",
+            percent, raw, MaxBacklight, verify);
         return SetBacklight(raw, verify);
     }
 
@@ -127,20 +152,34 @@ public sealed class BacklightService
         };
         foreach (var a in args) psi.ArgumentList.Add(a);
 
+        var cmd = "adb " + string.Join(" ", args);
+        _log.Debug("exec: {Cmd} (timeout={Timeout}s)", cmd, timeout.TotalSeconds);
+        var sw = Stopwatch.StartNew();
+
         try
         {
             using var proc = Process.Start(psi)!;
-            string outp = proc.StandardOutput.ReadToEnd();
-            string err = proc.StandardError.ReadToEnd();
-            if (!proc.WaitForExit((int)timeout.TotalMilliseconds))
+            // Read async so a chatty stream can't deadlock against WaitForExit.
+            var outTask = proc.StandardOutput.ReadToEndAsync();
+            var errTask = proc.StandardError.ReadToEndAsync();
+            bool exited = proc.WaitForExit((int)timeout.TotalMilliseconds);
+            if (!exited)
             {
-                try { proc.Kill(entireProcessTree: true); } catch { }
+                _log.Warning("exec TIMED OUT after {Ms}ms: {Cmd} — killing.", sw.ElapsedMilliseconds, cmd);
+                try { proc.Kill(entireProcessTree: true); } catch (Exception kex) { _log.Debug(kex, "kill failed."); }
             }
-            return (proc.HasExited ? proc.ExitCode : -1, outp, err);
+            string outp = outTask.GetAwaiter().GetResult();
+            string err = errTask.GetAwaiter().GetResult();
+            int exit = proc.HasExited ? proc.ExitCode : -1;
+            sw.Stop();
+            _log.Debug("exec done in {Ms}ms: exit={Exit} stdout='{Out}' stderr='{Err}'",
+                sw.ElapsedMilliseconds, exit, outp.Trim(), err.Trim());
+            return (exit, outp, err);
         }
         catch (Exception ex)
         {
-            _log.Error(ex, "adb invocation failed.");
+            sw.Stop();
+            _log.Error(ex, "adb invocation failed after {Ms}ms: {Cmd}", sw.ElapsedMilliseconds, cmd);
             return (-1, "", ex.Message);
         }
     }

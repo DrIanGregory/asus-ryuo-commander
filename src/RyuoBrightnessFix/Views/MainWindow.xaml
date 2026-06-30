@@ -108,6 +108,19 @@
 
                     <Border Style="{StaticResource Card}">
                         <StackPanel>
+                            <TextBlock Text="Diagnostics" Style="{StaticResource HeaderText}" />
+                            <CheckBox Content="Verbose debug logging (adb commands, power events, timing)"
+                                      IsChecked="{Binding DebugLogging}" />
+                            <TextBlock Style="{StaticResource SubtleText}" TextWrapping="Wrap" Margin="0,6,0,0"
+                                       Text="Turn this on, reproduce the problem (e.g. sleep/wake or click Apply), then open the logs folder and share the latest ryuo-*.log file." />
+                            <Button Content="Open logs folder" Style="{StaticResource SecondaryButton}"
+                                    Command="{Binding OpenLogsFolderCommand}" HorizontalAlignment="Left"
+                                    Padding="12,6" Margin="0,10,0,0" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel>
                             <TextBlock Text="Activity" Style="{StaticResource HeaderText}" />
                             <TextBox Style="{StaticResource LogBox}" Height="140" Text="{Binding LogText, Mode=OneWay}"
                                      x:Name="LogTextBox" TextChanged="LogTextBox_TextChanged" />

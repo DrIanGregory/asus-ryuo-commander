@@ -4,6 +4,7 @@ using System.Windows;
 using RyuoBrightnessFix.Models;
 using RyuoBrightnessFix.Services;
 using Serilog;
+using Serilog.Core;
 using Serilog.Events;
 
 namespace RyuoBrightnessFix.ViewModels;
@@ -21,6 +22,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private readonly AppSettings _settings;
     private readonly StartupRegistrationService _startup;
     private readonly BacklightService _backlight;
+    private readonly LoggingLevelSwitch _levelSwitch;
     private readonly Queue<string> _logLines = new();
 
     private ResumeMonitor? _resumeMonitor;
@@ -31,12 +33,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public RelayCommand ApplyBrightnessCommand { get; }
     public RelayCommand Restore100Command { get; }
     public RelayCommand ReloadCommand { get; }
+    public RelayCommand OpenLogsFolderCommand { get; }
 
-    public MainViewModel(ILogger log, UiLogSink uiSink, AppSettings settings, StartupRegistrationService startup)
+    public MainViewModel(ILogger log, UiLogSink uiSink, AppSettings settings, StartupRegistrationService startup,
+        LoggingLevelSwitch levelSwitch)
     {
         _log = log.ForContext<MainViewModel>();
         _settings = settings;
         _startup = startup;
+        _levelSwitch = levelSwitch;
         _backlight = new BacklightService(log);
 
         // Mirror persisted settings into bindable fields.
@@ -48,12 +53,18 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _showTrayIcon = settings.ShowTrayIcon;
         _autoFixOnResume = settings.AutoFixOnResume;
         _setBrightnessOnSuspend = settings.SetBrightnessOnSuspend;
+        _debugLogging = settings.DebugLogging;
 
         ApplyBrightnessCommand = new RelayCommand(() => ApplyBrightness(BrightnessPercent), () => CanControlDevice);
         Restore100Command = new RelayCommand(() => ApplyBrightness(100), () => CanControlDevice);
         ReloadCommand = new RelayCommand(RefreshDevice);
+        OpenLogsFolderCommand = new RelayCommand(OpenLogsFolder);
 
         uiSink.LineWritten += OnLogLine;
+
+        _log.Debug("Settings on load: AutoFixOnResume={Resume}, SetBrightnessOnSuspend={Suspend}, " +
+                   "Target={Target}%, SuspendBrightness={SuspendPct}%, DebugLogging={Debug}.",
+            _autoFixOnResume, _setBrightnessOnSuspend, _brightnessPercent, _suspendBrightnessPercent, _debugLogging);
 
         RefreshDevice();
     }
@@ -189,6 +200,21 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    private bool _debugLogging;
+    public bool DebugLogging
+    {
+        get => _debugLogging;
+        set
+        {
+            if (!SetProperty(ref _debugLogging, value)) return;
+            _settings.DebugLogging = value;
+            SaveSettings();
+            _levelSwitch.MinimumLevel = value ? LogEventLevel.Verbose : LogEventLevel.Information;
+            _log.Information("Debug logging turned {State}. Minimum level is now {Level}.",
+                value ? "ON" : "OFF", _levelSwitch.MinimumLevel);
+        }
+    }
+
     private string _deviceStatus = "Loading…";
     public string DeviceStatus { get => _deviceStatus; private set => SetProperty(ref _deviceStatus, value); }
 
@@ -220,9 +246,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     /// <summary>Set the LCD backlight to a percent via adb, on a background thread.</summary>
     private void ApplyBrightness(int percent)
     {
+        _log.Debug("ApplyBrightness({Percent}%) requested. CanControlDevice={Can}.", percent, CanControlDevice);
         if (!CanControlDevice)
         {
-            _log.Warning("LCD not available; cannot set brightness.");
+            _log.Warning("LCD not available; cannot set brightness (CanControlDevice is false).");
             return;
         }
 
@@ -230,17 +257,44 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _log.Information("Setting LCD backlight to {Percent}%…", percent);
         Task.Run(() =>
         {
-            var (ok, msg) = _backlight.SetPercent(percent);
-            if (!ok) _log.Error("Backlight set failed: {Msg}", msg);
+            try
+            {
+                var (ok, msg) = _backlight.SetPercent(percent);
+                if (ok) _log.Information("Apply succeeded: {Msg}", msg);
+                else _log.Error("Backlight set failed: {Msg}", msg);
+            }
+            catch (Exception ex)
+            {
+                _log.Error(ex, "Unexpected error applying brightness.");
+            }
         });
     }
 
     /// <summary>Invoked by the tray "Restore brightness now" menu item.</summary>
     public void RestoreToTarget() => ApplyBrightness(BrightnessPercent);
 
+    /// <summary>Open the folder holding the rolling log files in Explorer.</summary>
+    private void OpenLogsFolder()
+    {
+        try
+        {
+            Directory.CreateDirectory(AppConstants.LogDir);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = AppConstants.LogDir,
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            _log.Error(ex, "Could not open the logs folder ({Dir}).", AppConstants.LogDir);
+        }
+    }
+
     /// <summary>Refresh whether the Ryuo LCD is reachable over adb.</summary>
     private void RefreshDevice()
     {
+        _log.Debug("RefreshDevice: AdbAvailable={Adb}.", _backlight.AdbAvailable);
         ConfigPathDisplay = _backlight.AdbAvailable
             ? "Using ASUS Info Hub adb (Android backlight control)."
             : "ASUS Info Hub not found.";

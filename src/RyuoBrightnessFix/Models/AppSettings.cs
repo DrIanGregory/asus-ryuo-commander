@@ -33,6 +33,14 @@ public sealed class AppSettings
     /// </summary>
     public int SuspendBrightnessPercent { get; set; } = 100;
 
+    // --- Diagnostics ---
+    /// <summary>
+    /// When true, the logger captures full verbose/debug detail (adb command lines,
+    /// exit codes, stdout/stderr, power-event timing). Off by default — turn on to
+    /// diagnose, then off to keep the log readable.
+    /// </summary>
+    public bool DebugLogging { get; set; }
+
     // --- Window placement (restored on next launch) ---
     public double? WindowLeft { get; set; }
     public double? WindowTop { get; set; }
