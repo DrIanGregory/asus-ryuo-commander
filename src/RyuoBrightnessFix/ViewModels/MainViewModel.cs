@@ -41,6 +41,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         // Mirror persisted settings into bindable fields.
         _brightnessPercent = settings.TargetBrightnessPercent;
+        _suspendBrightnessPercent = settings.SuspendBrightnessPercent;
         _startWithWindows = startup.IsRegistered();   // reflect reality, not just the saved flag
         _startMinimized = settings.StartMinimized;
         _minimizeToTrayOnClose = settings.MinimizeToTrayOnClose;
@@ -102,6 +103,20 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             if (SetProperty(ref _brightnessPercent, Math.Clamp(value, 0, 100)))
             {
                 _settings.TargetBrightnessPercent = _brightnessPercent;
+                SaveSettings();
+            }
+        }
+    }
+
+    private int _suspendBrightnessPercent;
+    public int SuspendBrightnessPercent
+    {
+        get => _suspendBrightnessPercent;
+        set
+        {
+            if (SetProperty(ref _suspendBrightnessPercent, Math.Clamp(value, 0, 100)))
+            {
+                _settings.SuspendBrightnessPercent = _suspendBrightnessPercent;
                 SaveSettings();
             }
         }
@@ -265,13 +280,21 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         StopResumeMonitor();
         if (!AutoFixOnResume) return;
 
-        // On resume, set the LCD backlight back to the target percent via adb.
-        int target = BrightnessPercent;
-        Func<CancellationToken, bool> action = _ => _backlight.SetPercent(target).Ok;
+        // Read the slider values live (not captured) so moving a slider takes effect
+        // without restarting the monitor.
+        // On resume, restore the normal target brightness.
+        Func<CancellationToken, bool> onResume = _ => _backlight.SetPercent(BrightnessPercent).Ok;
 
-        _resumeMonitor = new ResumeMonitor(10_000, action, _log);
+        // Just before sleep, push the dedicated "while asleep" brightness so the panel
+        // stays bright instead of dropping to its minimum. Fast/unverified write — the
+        // suspend window is short.
+        Func<bool> onSuspend = () => _backlight.SetPercent(SuspendBrightnessPercent, verify: false).Ok;
+
+        _resumeMonitor = new ResumeMonitor(10_000, onResume, _log, onSuspend);
         _resumeMonitor.Start();
-        _log.Information("Auto-fix on resume is ON (set backlight to {Percent}% after sleep).", target);
+        _log.Information(
+            "Keep-brightness-across-sleep is ON (set backlight to {Suspend}% on sleep, restore to {Target}% after wake).",
+            SuspendBrightnessPercent, BrightnessPercent);
     }
 
     private void StopResumeMonitor()

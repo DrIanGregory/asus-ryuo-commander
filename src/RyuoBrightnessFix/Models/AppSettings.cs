@@ -15,11 +15,20 @@ public sealed class AppSettings
     public bool ShowTrayIcon { get; set; } = true;
 
     // --- Brightness ---
-    /// <summary>Reapply the target brightness automatically after the system resumes.</summary>
+    /// <summary>
+    /// Keep the target brightness across sleep: push it just before the system
+    /// suspends (so the panel stays bright while asleep) and re-apply it after resume.
+    /// </summary>
     public bool AutoFixOnResume { get; set; } = true;
 
     /// <summary>The slider value; also the brightness restored after resume.</summary>
     public int TargetBrightnessPercent { get; set; } = 100;
+
+    /// <summary>
+    /// Brightness pushed to the panel just before the PC sleeps, so it stays bright
+    /// while asleep. Independent of <see cref="TargetBrightnessPercent"/>.
+    /// </summary>
+    public int SuspendBrightnessPercent { get; set; } = 100;
 
     // --- Window placement (restored on next launch) ---
     public double? WindowLeft { get; set; }

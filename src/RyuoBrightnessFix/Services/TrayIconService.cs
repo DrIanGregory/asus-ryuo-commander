@@ -23,7 +23,7 @@ public sealed class TrayIconService : IDisposable
     {
         _notifyIcon = new NotifyIcon
         {
-            Icon = IconFactory.CreateAppIcon(),
+            Icon = IconFactory.CreateTrayIcon(),
             Text = AppConstants.DisplayName,
             Visible = false,
         };
@@ -61,12 +61,38 @@ public sealed class TrayIconService : IDisposable
     }
 }
 
-/// <summary>Generates a simple app icon at runtime so we don't need a checked-in .ico file.</summary>
+/// <summary>
+/// Supplies the system-tray icon. Prefers the checked-in <c>app.ico</c> (the cyan-dragon
+/// emblem — the same icon used for the exe/taskbar/window, multi-res down to 16px) embedded
+/// as a WPF resource; falls back to a simple icon drawn at runtime if it can't be loaded.
+/// </summary>
 [SupportedOSPlatform("windows")]
 internal static class IconFactory
 {
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool DestroyIcon(IntPtr handle);
+
+    /// <summary>The dragon emblem from the embedded <c>app.ico</c>, or the runtime fallback.</summary>
+    public static Icon CreateTrayIcon()
+    {
+        try
+        {
+            var uri = new Uri("pack://application:,,,/Resources/Icons/app.ico", UriKind.Absolute);
+            var resource = System.Windows.Application.GetResourceStream(uri);
+            if (resource is not null)
+            {
+                using var stream = resource.Stream;
+                // NotifyIcon shows 16px in the tray; ask the .ico for its 16x16 frame.
+                return new Icon(stream, new Size(16, 16));
+            }
+        }
+        catch
+        {
+            // Resource missing or unreadable — fall through to the drawn fallback below.
+        }
+
+        return CreateAppIcon();
+    }
 
     public static Icon CreateAppIcon()
     {

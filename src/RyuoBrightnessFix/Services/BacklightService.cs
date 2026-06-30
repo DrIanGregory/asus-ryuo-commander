@@ -62,16 +62,31 @@ public sealed class BacklightService
         return int.TryParse(outp.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) ? v : null;
     }
 
-    /// <summary>Set the raw backlight (0–256). Returns (ok, message).</summary>
-    public (bool Ok, string Message) SetBacklight(int value)
+    /// <summary>
+    /// Set the raw backlight (0–256). Returns (ok, message).
+    /// </summary>
+    /// <param name="verify">
+    /// When true (default) the value is read back to confirm the device accepted it.
+    /// Pass false on the suspend path: Windows gives apps only a short window to react
+    /// to <see cref="Microsoft.Win32.PowerModes.Suspend"/>, so we write fast and skip the
+    /// extra round-trip rather than risk being cut off mid-readback.
+    /// </param>
+    public (bool Ok, string Message) SetBacklight(int value, bool verify = true)
     {
         if (_adb is null)
             return (false, "ASUS adb.exe not found (is 'ASUS Info Hub - ROG RYUO IV' installed?).");
 
         value = Math.Clamp(value, 0, MaxBacklight);
-        var (exit, _, err) = Run(new[] { "shell", $"echo {value} > {Node}" }, TimeSpan.FromSeconds(10));
+        var writeTimeout = verify ? TimeSpan.FromSeconds(10) : TimeSpan.FromSeconds(4);
+        var (exit, _, err) = Run(new[] { "shell", $"echo {value} > {Node}" }, writeTimeout);
         if (exit != 0)
             return (false, "adb write failed: " + (err.Trim().Length > 0 ? err.Trim() : $"exit {exit}"));
+
+        if (!verify)
+        {
+            _log.Information("Backlight write {Value}/{Max} issued (unverified).", value, MaxBacklight);
+            return (true, $"Backlight write {value}/{MaxBacklight} issued.");
+        }
 
         var now = GetBacklight();
         if (now is int n && Math.Abs(n - value) <= 1)
@@ -83,12 +98,13 @@ public sealed class BacklightService
     }
 
     /// <summary>Set brightness as a 0–100% value.</summary>
-    public (bool Ok, string Message) SetPercent(int percent)
+    /// <param name="verify">See <see cref="SetBacklight"/>; pass false on the fast suspend path.</param>
+    public (bool Ok, string Message) SetPercent(int percent, bool verify = true)
     {
         percent = Math.Clamp(percent, 0, 100);
         int raw = (int)Math.Round(percent * MaxBacklight / 100.0);
         if (percent > 0 && raw < 1) raw = 1;
-        return SetBacklight(raw);
+        return SetBacklight(raw, verify);
     }
 
     /// <summary>Current brightness as 0–100%, or null.</summary>

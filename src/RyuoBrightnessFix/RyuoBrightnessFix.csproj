@@ -13,12 +13,21 @@
     <RootNamespace>RyuoBrightnessFix</RootNamespace>
     <!-- NOTE: InvariantGlobalization must stay OFF — WPF data binding needs a real
          culture (en-US) or it throws "Cannot find non-neutral culture" at render. -->
+    <!-- The cyan-dragon emblem ("Ryuo" = dragon king) is the single app icon,
+         used for the exe, taskbar, window chrome and the system tray. -->
+    <ApplicationIcon>Resources\Icons\app.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Serilog" Version="4.2.0" />
     <PackageReference Include="Serilog.Sinks.File" Version="6.0.0" />
     <PackageReference Include="Microsoft.Win32.SystemEvents" Version="8.0.0" />
+  </ItemGroup>
+
+  <!-- The dragon emblem as a WPF resource: used by the window chrome and loaded
+       by the NotifyIcon (its 16x16 frame) for the tray. -->
+  <ItemGroup>
+    <Resource Include="Resources\Icons\app.ico" />
   </ItemGroup>
 
 </Project>
