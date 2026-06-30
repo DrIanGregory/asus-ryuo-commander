@@ -47,6 +47,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _minimizeToTrayOnClose = settings.MinimizeToTrayOnClose;
         _showTrayIcon = settings.ShowTrayIcon;
         _autoFixOnResume = settings.AutoFixOnResume;
+        _setBrightnessOnSuspend = settings.SetBrightnessOnSuspend;
 
         ApplyBrightnessCommand = new RelayCommand(() => ApplyBrightness(BrightnessPercent), () => CanControlDevice);
         Restore100Command = new RelayCommand(() => ApplyBrightness(100), () => CanControlDevice);
@@ -175,6 +176,19 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    private bool _setBrightnessOnSuspend;
+    public bool SetBrightnessOnSuspend
+    {
+        get => _setBrightnessOnSuspend;
+        set
+        {
+            if (!SetProperty(ref _setBrightnessOnSuspend, value)) return;
+            _settings.SetBrightnessOnSuspend = value;
+            SaveSettings();
+            RestartResumeMonitor();
+        }
+    }
+
     private string _deviceStatus = "Loading…";
     public string DeviceStatus { get => _deviceStatus; private set => SetProperty(ref _deviceStatus, value); }
 
@@ -278,23 +292,28 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private void RestartResumeMonitor()
     {
         StopResumeMonitor();
-        if (!AutoFixOnResume) return;
+        if (!AutoFixOnResume && !SetBrightnessOnSuspend) return;
 
         // Read the slider values live (not captured) so moving a slider takes effect
-        // without restarting the monitor.
+        // without restarting the monitor. Each action is wired only if its toggle is on.
+
         // On resume, restore the normal target brightness.
-        Func<CancellationToken, bool> onResume = _ => _backlight.SetPercent(BrightnessPercent).Ok;
+        Func<CancellationToken, bool>? onResume = AutoFixOnResume
+            ? _ => _backlight.SetPercent(BrightnessPercent).Ok
+            : null;
 
         // Just before sleep, push the dedicated "while asleep" brightness so the panel
         // stays bright instead of dropping to its minimum. Fast/unverified write — the
         // suspend window is short.
-        Func<bool> onSuspend = () => _backlight.SetPercent(SuspendBrightnessPercent, verify: false).Ok;
+        Func<bool>? onSuspend = SetBrightnessOnSuspend
+            ? () => _backlight.SetPercent(SuspendBrightnessPercent, verify: false).Ok
+            : null;
 
-        _resumeMonitor = new ResumeMonitor(10_000, onResume, _log, onSuspend);
+        _resumeMonitor = new ResumeMonitor(10_000, _log, onResume, onSuspend);
         _resumeMonitor.Start();
         _log.Information(
-            "Keep-brightness-across-sleep is ON (set backlight to {Suspend}% on sleep, restore to {Target}% after wake).",
-            SuspendBrightnessPercent, BrightnessPercent);
+            "Power monitor ON (restore-on-wake={Resume} to {Target}%, set-on-sleep={Suspend} to {SuspendPct}%).",
+            AutoFixOnResume, BrightnessPercent, SetBrightnessOnSuspend, SuspendBrightnessPercent);
     }
 
     private void StopResumeMonitor()

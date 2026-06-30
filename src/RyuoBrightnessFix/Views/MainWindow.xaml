@@ -63,10 +63,12 @@
                                 <Button Content="100%" Style="{StaticResource SecondaryButton}"
                                         Command="{Binding Restore100Command}" Width="90" Margin="10,0,0,0" />
                             </StackPanel>
-                            <CheckBox Content="Keep this brightness across sleep (set on sleep, restore on wake)"
+                            <CheckBox Content="Restore this brightness after waking"
                                       IsChecked="{Binding AutoFixOnResume}" Margin="0,14,0,0" />
+                            <CheckBox Content="Set brightness while asleep"
+                                      IsChecked="{Binding SetBrightnessOnSuspend}" Margin="0,8,0,0" />
 
-                            <StackPanel Margin="0,14,0,0" IsEnabled="{Binding AutoFixOnResume}">
+                            <StackPanel Margin="0,14,0,0" IsEnabled="{Binding SetBrightnessOnSuspend}">
                                 <TextBlock Text="Brightness while asleep" Style="{StaticResource SubtleText}" />
                                 <Grid Margin="0,6,0,0">
                                     <Grid.ColumnDefinitions>

@@ -15,11 +15,14 @@ public sealed class AppSettings
     public bool ShowTrayIcon { get; set; } = true;
 
     // --- Brightness ---
-    /// <summary>
-    /// Keep the target brightness across sleep: push it just before the system
-    /// suspends (so the panel stays bright while asleep) and re-apply it after resume.
-    /// </summary>
+    /// <summary>Re-apply the target brightness automatically after the system resumes.</summary>
     public bool AutoFixOnResume { get; set; } = true;
+
+    /// <summary>
+    /// Push <see cref="SuspendBrightnessPercent"/> to the panel just before the system
+    /// suspends, so it stays bright while asleep instead of dropping to its minimum.
+    /// </summary>
+    public bool SetBrightnessOnSuspend { get; set; } = true;
 
     /// <summary>The slider value; also the brightness restored after resume.</summary>
     public int TargetBrightnessPercent { get; set; } = 100;

@@ -24,7 +24,7 @@ namespace RyuoBrightnessFix.Services;
 public sealed class ResumeMonitor : IDisposable
 {
     private readonly int _resumeDelayMs;
-    private readonly Func<CancellationToken, bool> _onResume;
+    private readonly Func<CancellationToken, bool>? _onResume;
     private readonly Func<bool>? _onSuspend;
     private readonly ILogger _log;
 
@@ -33,14 +33,16 @@ public sealed class ResumeMonitor : IDisposable
     private CancellationTokenSource? _cts;
     private bool _subscribed;
 
-    /// <param name="resumeDelayMs">Delay after resume before running the action.</param>
-    /// <param name="onResume">Action to run on resume; returns true on success.</param>
+    /// <param name="resumeDelayMs">Delay after resume before running the resume action.</param>
+    /// <param name="onResume">
+    /// Optional action to run on resume (after the delay); returns true on success.
+    /// </param>
     /// <param name="onSuspend">
     /// Optional action to run synchronously just before sleep; returns true on success.
     /// Must be fast — Windows gives apps only a short window to react to suspend.
     /// </param>
-    public ResumeMonitor(int resumeDelayMs, Func<CancellationToken, bool> onResume, ILogger log,
-        Func<bool>? onSuspend = null)
+    public ResumeMonitor(int resumeDelayMs, ILogger log,
+        Func<CancellationToken, bool>? onResume = null, Func<bool>? onSuspend = null)
     {
         _resumeDelayMs = resumeDelayMs;
         _onResume = onResume;
@@ -54,8 +56,9 @@ public sealed class ResumeMonitor : IDisposable
         _cts = new CancellationTokenSource();
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
         _subscribed = true;
-        _log.Information("Power monitor active. Resume delay = {Delay} ms. Keep-bright-on-sleep = {OnSuspend}.",
-            _resumeDelayMs, _onSuspend is not null);
+        _log.Information(
+            "Power monitor active. Restore-on-wake = {OnResume}, set-on-sleep = {OnSuspend}. Resume delay = {Delay} ms.",
+            _onResume is not null, _onSuspend is not null, _resumeDelayMs);
     }
 
     private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
@@ -68,7 +71,7 @@ public sealed class ResumeMonitor : IDisposable
             return;
         }
 
-        if (e.Mode != PowerModes.Resume)
+        if (e.Mode != PowerModes.Resume || _onResume is null)
             return;
 
         _log.Information("System resume detected. Applying fix in {Delay} ms.", _resumeDelayMs);
@@ -81,7 +84,7 @@ public sealed class ResumeMonitor : IDisposable
                 try
                 {
                     Task.Delay(_resumeDelayMs, token).Wait(token);
-                    bool ok = _onResume(token);
+                    bool ok = _onResume!(token);
                     if (ok) _log.Information("Post-resume fix applied successfully.");
                     else _log.Error("Post-resume fix FAILED. See log above.");
                 }
