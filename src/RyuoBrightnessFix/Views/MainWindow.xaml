@@ -72,7 +72,7 @@
 
                     <Border Style="{StaticResource Card}">
                         <TextBlock Style="{StaticResource SubtleText}" TextWrapping="Wrap"
-                                   Text="Sets the Ryuo IV LCD brightness directly over the vendor USB HID channel (the same one ASUS Info Hub uses) — no adb needed. The panel's firmware dims itself a few seconds after the last message from the PC, so 'Hold brightness' re-applies it on a short timer to keep it steady while the PC is awake. (During actual sleep nothing on the PC can run, so the panel will still dim until you wake — it's restored on resume.)" />
+                                   Text="Sets the Ryuo IV LCD brightness directly over the vendor USB HID channel — no adb, and no ASUS Info Hub needed. 'Hold brightness' keeps a live USB connection to the panel (reading its stream) so its firmware doesn't fall back to the dim standby it uses when the PC stops talking to it. Because it uses the same USB channel as ASUS Info Hub, run one or the other — not both at once. (During real sleep the PC is off so the panel dims; it's restored on wake.)" />
                     </Border>
                 </StackPanel>
             </TabItem>

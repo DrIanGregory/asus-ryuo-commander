@@ -347,7 +347,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     /// <summary>
     /// Start or stop the brightness keep-alive so it runs exactly when it should:
-    /// the device is controllable AND the user has the option enabled.
+    /// the device is controllable AND the user has the option enabled. The hold opens a
+    /// persistent HID session that continuously drains the device's input stream (which is
+    /// what actually keeps the panel out of standby); the timer re-pushes the current
+    /// brightness so slider changes take effect and the value stays applied.
     /// </summary>
     private void UpdateKeepAlive()
     {
@@ -355,15 +358,17 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         if (shouldRun && _keepAliveTimer is null)
         {
-            _keepAliveTimer = new System.Threading.Timer(KeepAliveTick, null, KeepAliveInterval, KeepAliveInterval);
-            _log.Information("Brightness keep-alive ON (re-apply every {Sec}s to prevent the panel auto-dimming).",
+            _backlight.StartHold();   // open the read-draining session
+            _keepAliveTimer = new System.Threading.Timer(KeepAliveTick, null, TimeSpan.Zero, KeepAliveInterval);
+            _log.Information("Brightness hold ON (HID read-drain + re-apply every {Sec}s).",
                 KeepAliveInterval.TotalSeconds);
         }
         else if (!shouldRun && _keepAliveTimer is not null)
         {
             _keepAliveTimer.Dispose();
             _keepAliveTimer = null;
-            _log.Information("Brightness keep-alive OFF.");
+            _backlight.StopHold();
+            _log.Information("Brightness hold OFF.");
         }
     }
 
@@ -431,5 +436,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _keepAliveTimer?.Dispose();
         _keepAliveTimer = null;
         StopResumeMonitor();
+        _backlight.Dispose();
     }
 }

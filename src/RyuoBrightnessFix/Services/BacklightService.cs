@@ -27,9 +27,16 @@ namespace RyuoBrightnessFix.Services;
 /// <item>Delivered as one HID output report: <c>[0x00] + frame + zero-pad</c> to the report
 /// length.</item>
 /// </list>
+///
+/// <para><b>Session / read-drain.</b> The panel's firmware only stays out of its low-power
+/// standby (~1%) while the host is actively <em>reading</em> the device's HID input stream —
+/// that's what ASUS Info Hub does. A write-only client works only until the device's input
+/// buffer backs up, after which it dims. So <see cref="StartHold"/> opens a persistent HID
+/// session and continuously drains the input reports (discarding them) to keep the session
+/// alive; <see cref="SetPercent"/> then writes brightness over that same session.</para>
 /// </summary>
 [SupportedOSPlatform("windows")]
-public sealed class BacklightService
+public sealed class BacklightService : IDisposable
 {
     private const int VendorId = 0x0B05;   // ASUS
     private const int ProductId = 0x1C76;  // Ryuo IV LCD
@@ -37,52 +44,82 @@ public sealed class BacklightService
     private const byte EscByte = 0x5B;
 
     private readonly ILogger _log;
+    private readonly object _sync = new();
     private int _seq = Environment.TickCount & 0x7FFFFFFF;
+
+    private HidStream? _stream;
+    private Thread? _reader;
+    private volatile bool _readerRun;
+    private int _outputReportLength;
+    private int _inputReportLength;
+    private bool _disposed;
 
     public BacklightService(ILogger log)
     {
         _log = log.ForContext<BacklightService>();
     }
 
-    /// <summary>True when the Ryuo IV HID interface is present on USB.</summary>
-    public bool DeviceConnected() => FindDevice() is not null;
+    /// <summary>True when a session is open, or the Ryuo IV HID interface is present on USB.</summary>
+    public bool DeviceConnected()
+    {
+        lock (_sync) { if (_stream is not null) return true; }
+        return FindDevice() is not null;
+    }
 
     /// <summary>
-    /// Set the LCD brightness as a 0–100% value by sending the vendor HID command.
-    /// Returns (ok, message). The HID channel is fire-and-forget (write-only), so success
-    /// reflects the USB write. Pass <paramref name="quiet"/> = true for the keep-alive
-    /// heartbeat so it logs at Debug instead of flooding the log every few seconds.
+    /// Open a persistent HID session and start draining the device's input stream so the panel
+    /// stays out of standby. Idempotent. Returns true if a session is open.
+    /// </summary>
+    public bool StartHold()
+    {
+        lock (_sync) { return EnsureOpenLocked() is not null; }
+    }
+
+    /// <summary>Close the persistent session (stops the read-drain; panel may then dim on its own).</summary>
+    public void StopHold() => CloseSession();
+
+    /// <summary>
+    /// Set the LCD brightness as a 0–100% value by sending the vendor HID command. If a hold
+    /// session is open the command goes over it; otherwise it opens a one-shot connection.
+    /// Pass <paramref name="quiet"/> = true for the keep-alive so it logs at Debug.
     /// </summary>
     public (bool Ok, string Message) SetPercent(int percent, bool quiet = false)
     {
         percent = Math.Clamp(percent, 0, 100);
-
-        var device = FindDevice();
-        if (device is null)
-            return (false, "Ryuo IV LCD not found on USB (VID 0B05 / PID 1C76, interface MI_00).");
-
-        int seq = unchecked(System.Threading.Interlocked.Increment(ref _seq)) & 0x7FFFFFFF;
+        int seq = Interlocked.Increment(ref _seq) & 0x7FFFFFFF;
         byte[] frame = BuildFrame(percent, seq);
 
+        // Fast path: write over the open hold session.
+        HidStream? held;
+        int heldLen;
+        lock (_sync) { held = _stream; heldLen = _outputReportLength; }
+        if (held is not null)
+        {
+            try
+            {
+                WriteReport(held, frame, heldLen);
+                LogSet(percent, quiet);
+                return (true, $"Brightness set to {percent}% over USB HID.");
+            }
+            catch (Exception ex)
+            {
+                _log.Error(ex, "HID write over hold session failed (percent={Percent}); reopening.", percent);
+                CloseSession();
+                // fall through to a one-shot attempt
+            }
+        }
+
+        // One-shot path (no hold session, or the held write just failed).
+        var dev = FindDevice();
+        if (dev is null)
+            return (false, "Ryuo IV LCD not found on USB (VID 0B05 / PID 1C76, interface MI_00).");
         try
         {
             var options = new OpenConfiguration();
             options.SetOption(OpenOption.Interruptible, true);
-            using HidStream stream = device.Open(options);
-
-            int reportLen = device.GetMaxOutputReportLength();   // includes the report-id byte
-            if (reportLen <= 1) reportLen = frame.Length + 1;
-            var report = new byte[reportLen];
-            report[0] = 0x00;                                    // report id (descriptor has none)
-            if (frame.Length > reportLen - 1)
-                return (false, $"Frame ({frame.Length}) larger than HID report ({reportLen - 1}).");
-            Buffer.BlockCopy(frame, 0, report, 1, frame.Length);
-
-            stream.Write(report);
-            _log.Debug("HID write ok: percent={Percent} seq={Seq} frame={Frame}",
-                percent, seq, Convert.ToHexString(frame));
-            if (quiet) _log.Debug("Keep-alive: brightness re-applied at {Percent}%.", percent);
-            else _log.Information("Brightness set to {Percent}% over USB HID.", percent);
+            using HidStream stream = dev.Open(options);
+            WriteReport(stream, frame, SafeLen(dev.GetMaxOutputReportLength));
+            LogSet(percent, quiet);
             return (true, $"Brightness set to {percent}% over USB HID.");
         }
         catch (Exception ex)
@@ -92,7 +129,101 @@ public sealed class BacklightService
         }
     }
 
-    // ---------------------------------------------------------------- protocol
+    private void LogSet(int percent, bool quiet)
+    {
+        if (quiet) _log.Debug("Keep-alive: brightness re-applied at {Percent}%.", percent);
+        else _log.Information("Brightness set to {Percent}% over USB HID.", percent);
+    }
+
+    private void WriteReport(HidStream stream, byte[] frame, int reportLen)
+    {
+        if (reportLen <= 1) reportLen = frame.Length + 1;
+        if (frame.Length > reportLen - 1)
+            throw new InvalidOperationException($"Frame ({frame.Length}) larger than HID report ({reportLen - 1}).");
+        var report = new byte[reportLen];
+        report[0] = 0x00;   // report id (descriptor has none)
+        Buffer.BlockCopy(frame, 0, report, 1, frame.Length);
+        stream.Write(report);
+    }
+
+    // ---------------------------------------------------------------- session
+
+    private HidStream? EnsureOpenLocked()   // caller holds _sync
+    {
+        if (_disposed) return null;
+        if (_stream is not null) return _stream;
+
+        var dev = FindDevice();
+        if (dev is null) return null;
+
+        var options = new OpenConfiguration();
+        options.SetOption(OpenOption.Interruptible, true);
+        var stream = dev.Open(options);
+        stream.ReadTimeout = 400;
+        stream.WriteTimeout = 2000;
+
+        _outputReportLength = SafeLen(dev.GetMaxOutputReportLength);
+        _inputReportLength = SafeLen(dev.GetMaxInputReportLength);
+        _stream = stream;
+        _readerRun = true;
+        _reader = new Thread(() => ReadLoop(stream)) { IsBackground = true, Name = "RyuoHidReader" };
+        _reader.Start();
+        _log.Information("HID session opened (out={Out}, in={In}); read-drain active to keep the panel awake.",
+            _outputReportLength, _inputReportLength);
+        return _stream;
+    }
+
+    /// <summary>
+    /// Continuously read (and discard) the device's HID input reports. This is what keeps the
+    /// panel out of standby — without an active reader it dims to ~1% within seconds.
+    /// </summary>
+    private void ReadLoop(HidStream stream)
+    {
+        int len = _inputReportLength > 0 ? _inputReportLength : 1025;
+        var buf = new byte[len];
+        while (_readerRun)
+        {
+            try
+            {
+                stream.Read(buf);   // drains one device→host report; throws TimeoutException if none
+            }
+            catch (TimeoutException)
+            {
+                // No report within ReadTimeout — normal, keep draining.
+            }
+            catch (Exception ex)
+            {
+                if (_readerRun) _log.Debug(ex, "HID read-drain loop ended (device gone / session closed).");
+                break;
+            }
+        }
+    }
+
+    private void CloseSession()
+    {
+        Thread? reader;
+        lock (_sync)
+        {
+            _readerRun = false;
+            try { _stream?.Close(); } catch { }
+            try { _stream?.Dispose(); } catch { }
+            _stream = null;
+            reader = _reader;
+            _reader = null;
+        }
+        // Let the read loop unwind (it will throw on the closed stream and exit).
+        try { reader?.Join(TimeSpan.FromMilliseconds(800)); } catch { }
+    }
+
+    public void Dispose()
+    {
+        lock (_sync) { _disposed = true; }
+        CloseSession();
+    }
+
+    // ---------------------------------------------------------------- device / protocol
+
+    private static int SafeLen(Func<int> f) { try { return f(); } catch { return 0; } }
 
     /// <summary>Locate the Ryuo IV MI_00 vendor HID interface (usage page 0xFF00).</summary>
     private HidDevice? FindDevice()
@@ -103,13 +234,10 @@ public sealed class BacklightService
             foreach (var d in DeviceList.Local.GetHidDevices(VendorId, ProductId))
             {
                 // The MI_00 interface is the vendor control channel; MI_01 is the adb/video path.
-                bool isMi00 = d.DevicePath.Contains("mi_00", StringComparison.OrdinalIgnoreCase)
-                              || d.DevicePath.Contains("&mi_00", StringComparison.OrdinalIgnoreCase);
-                if (isMi00) return d;
+                if (d.DevicePath.Contains("mi_00", StringComparison.OrdinalIgnoreCase))
+                    return d;
                 fallback ??= d;
             }
-            // Some enumerations don't expose the interface in the path — fall back to a
-            // 1024-byte-report device, then to any matching VID/PID device.
             if (fallback is not null)
                 _log.Debug("HID MI_00 not matched by path; using fallback {Path}.", fallback.DevicePath);
             return fallback;
