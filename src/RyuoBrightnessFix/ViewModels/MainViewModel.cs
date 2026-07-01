@@ -52,13 +52,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         // Mirror persisted settings into bindable fields.
         _brightnessPercent = settings.TargetBrightnessPercent;
-        _suspendBrightnessPercent = settings.SuspendBrightnessPercent;
         _startWithWindows = startup.IsRegistered();   // reflect reality, not just the saved flag
         _startMinimized = settings.StartMinimized;
         _minimizeToTrayOnClose = settings.MinimizeToTrayOnClose;
         _showTrayIcon = settings.ShowTrayIcon;
         _autoFixOnResume = settings.AutoFixOnResume;
-        _setBrightnessOnSuspend = settings.SetBrightnessOnSuspend;
         _keepBrightnessAlive = settings.KeepBrightnessAlive;
         _debugLogging = settings.DebugLogging;
 
@@ -69,9 +67,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         uiSink.LineWritten += OnLogLine;
 
-        _log.Debug("Settings on load: AutoFixOnResume={Resume}, SetBrightnessOnSuspend={Suspend}, " +
-                   "Target={Target}%, SuspendBrightness={SuspendPct}%, DebugLogging={Debug}.",
-            _autoFixOnResume, _setBrightnessOnSuspend, _brightnessPercent, _suspendBrightnessPercent, _debugLogging);
+        _log.Debug("Settings on load: KeepBrightnessAlive={Keep}, AutoFixOnResume={Resume}, " +
+                   "Target={Target}%, DebugLogging={Debug}.",
+            _keepBrightnessAlive, _autoFixOnResume, _brightnessPercent, _debugLogging);
 
         RefreshDevice();
     }
@@ -127,20 +125,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    private int _suspendBrightnessPercent;
-    public int SuspendBrightnessPercent
-    {
-        get => _suspendBrightnessPercent;
-        set
-        {
-            if (SetProperty(ref _suspendBrightnessPercent, Math.Clamp(value, 0, 100)))
-            {
-                _settings.SuspendBrightnessPercent = _suspendBrightnessPercent;
-                SaveSettings();
-            }
-        }
-    }
-
     private bool _startWithWindows;
     public bool StartWithWindows
     {
@@ -189,19 +173,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             if (!SetProperty(ref _autoFixOnResume, value)) return;
             _settings.AutoFixOnResume = value;
-            SaveSettings();
-            RestartResumeMonitor();
-        }
-    }
-
-    private bool _setBrightnessOnSuspend;
-    public bool SetBrightnessOnSuspend
-    {
-        get => _setBrightnessOnSuspend;
-        set
-        {
-            if (!SetProperty(ref _setBrightnessOnSuspend, value)) return;
-            _settings.SetBrightnessOnSuspend = value;
             SaveSettings();
             RestartResumeMonitor();
         }
@@ -355,28 +326,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private void RestartResumeMonitor()
     {
         StopResumeMonitor();
-        if (!AutoFixOnResume && !SetBrightnessOnSuspend) return;
+        if (!AutoFixOnResume) return;
 
-        // Read the slider values live (not captured) so moving a slider takes effect
-        // without restarting the monitor. Each action is wired only if its toggle is on.
-
-        // On resume, restore the normal target brightness.
-        Func<CancellationToken, bool>? onResume = AutoFixOnResume
-            ? _ => _backlight.SetPercent(BrightnessPercent).Ok
-            : null;
-
-        // Just before sleep, push the dedicated "while asleep" brightness so the panel
-        // stays bright instead of dropping to its minimum. Fast/unverified write — the
-        // suspend window is short.
-        Func<bool>? onSuspend = SetBrightnessOnSuspend
-            ? () => _backlight.SetPercent(SuspendBrightnessPercent).Ok
-            : null;
-
-        _resumeMonitor = new ResumeMonitor(10_000, _log, onResume, onSuspend);
+        // On resume, restore the target brightness immediately (the keep-alive also
+        // re-applies within a few seconds, but this gives a prompt kick on wake).
+        // Read the slider value live so moving it takes effect without a restart.
+        _resumeMonitor = new ResumeMonitor(10_000, _log,
+            onResume: _ => _backlight.SetPercent(BrightnessPercent).Ok);
         _resumeMonitor.Start();
-        _log.Information(
-            "Power monitor ON (restore-on-wake={Resume} to {Target}%, set-on-sleep={Suspend} to {SuspendPct}%).",
-            AutoFixOnResume, BrightnessPercent, SetBrightnessOnSuspend, SuspendBrightnessPercent);
+        _log.Information("Resume monitor ON (restore to {Target}% after wake).", BrightnessPercent);
     }
 
     private void StopResumeMonitor()

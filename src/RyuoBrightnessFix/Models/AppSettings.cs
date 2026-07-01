@@ -18,20 +18,8 @@ public sealed class AppSettings
     /// <summary>Re-apply the target brightness automatically after the system resumes.</summary>
     public bool AutoFixOnResume { get; set; } = true;
 
-    /// <summary>
-    /// Push <see cref="SuspendBrightnessPercent"/> to the panel just before the system
-    /// suspends, so it stays bright while asleep instead of dropping to its minimum.
-    /// </summary>
-    public bool SetBrightnessOnSuspend { get; set; } = true;
-
     /// <summary>The slider value; also the brightness restored after resume.</summary>
     public int TargetBrightnessPercent { get; set; } = 100;
-
-    /// <summary>
-    /// Brightness pushed to the panel just before the PC sleeps, so it stays bright
-    /// while asleep. Independent of <see cref="TargetBrightnessPercent"/>.
-    /// </summary>
-    public int SuspendBrightnessPercent { get; set; } = 100;
 
     /// <summary>
     /// Continuously re-apply the target brightness on a short timer. The panel's own

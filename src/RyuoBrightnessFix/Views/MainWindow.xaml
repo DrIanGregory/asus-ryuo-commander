@@ -67,24 +67,6 @@
                                       IsChecked="{Binding KeepBrightnessAlive}" Margin="0,14,0,0" />
                             <CheckBox Content="Restore this brightness after waking"
                                       IsChecked="{Binding AutoFixOnResume}" Margin="0,8,0,0" />
-                            <CheckBox Content="Set brightness while asleep"
-                                      IsChecked="{Binding SetBrightnessOnSuspend}" Margin="0,8,0,0" />
-
-                            <StackPanel Margin="0,14,0,0" IsEnabled="{Binding SetBrightnessOnSuspend}">
-                                <TextBlock Text="Brightness while asleep" Style="{StaticResource SubtleText}" />
-                                <Grid Margin="0,6,0,0">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <Slider Grid.Column="0" Minimum="0" Maximum="100"
-                                            Value="{Binding SuspendBrightnessPercent, Mode=TwoWay}"
-                                            IsEnabled="{Binding SliderEnabled}" VerticalAlignment="Center" />
-                                    <TextBlock Grid.Column="1" Width="52" TextAlignment="Right" VerticalAlignment="Center"
-                                               FontSize="18" FontFamily="Segoe UI Semibold"
-                                               Text="{Binding SuspendBrightnessPercent, StringFormat={}{0}%}" />
-                                </Grid>
-                            </StackPanel>
                         </StackPanel>
                     </Border>
 
