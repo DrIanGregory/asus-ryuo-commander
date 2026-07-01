@@ -1,56 +1,124 @@
 # ASUS Ryuo Commander
 
-Fixes the **ASUS ROG Ryuo IV** AIO LCD that goes **dim after the PC wakes from sleep** — even though Armoury Crate still shows brightness at 100%.
+Fixes the **ASUS ROG Ryuo IV** AIO LCD that **dims to ~1% after sleep** — and, more
+generally, whenever ASUS Info Hub isn't actively driving it — even though the software
+still claims 100%.
 
-A small Windows (.NET 8 / WPF) tray app that sets the LCD brightness back to your chosen level — automatically on every resume, or on demand from a slider.
+A small Windows (.NET 8 / WPF) tray app that holds the LCD at your chosen brightness by
+speaking the panel's **native USB‑HID protocol** directly. **No adb, and no ASUS Info Hub
+required at runtime.**
 
 ![Brightness tab](docs/brightness-tab.png)
 
 ---
 
-## The bug, and the actual fix
+## TL;DR
 
-The Ryuo IV's little screen is a **tiny Android device** (`cm16`). Its brightness is the Android kernel **backlight** node:
+- The Ryuo IV screen is a **Rockchip Android** board (device `cm16`) driving a **DSI panel**,
+  with an on‑device home app (`com.baiyi.homeui.hshomeui`).
+- Brightness is **not** the Linux sysfs backlight, **not** the Android `screen_brightness`
+  setting, and **not** adb. It's a **vendor USB‑HID command**; the firmware applies it as the
+  home‑UI window's `screenBrightness` (a per‑window override).
+- The panel's firmware **dims itself into a low‑power standby a few seconds after the last
+  message from the PC**. It stays awake only while the host **keeps reading its HID input
+  stream** — which is what Info Hub does.
+- This app replicates that: it opens the HID interface, **continuously drains the input
+  stream to hold the session**, and re‑applies your brightness. That keeps the panel bright
+  with Info Hub closed.
+
+---
+
+## How we got here (the investigation)
+
+This started from a wrong assumption and was corrected by on‑device reverse engineering and
+live testing. The dead ends are documented because they're the obvious‑but‑wrong first
+guesses:
+
+1. **sysfs backlight — WRONG.** `/sys/class/backlight/backlight/brightness` (0–256) can be
+   written over adb and *reads back* the value, but `actual_brightness` never rises above
+   ~13 and the panel stays dim. The node is decoupled from the DSI panel.
+2. **Android `screen_brightness` — WRONG.** Setting it 10 vs 255 changed nothing on the
+   panel. When Info Hub changed brightness, *none* of these values moved.
+3. **adb `transfer_proxy` socket — WRONG.** That abstract socket is the Rockchip **RKNN NPU
+   video server** (`/vendor/bin/rknn_server`) used for streaming frames to the panel, not
+   brightness.
+4. **USB HID — CORRECT.** Live `logcat` capture on the (rooted) device showed brightness
+   arriving on `/dev/hidg0` from a vendor HID interface, decoded by `SerialService` and
+   applied by the home‑UI app. Confirmed by a sender that visibly moved the panel.
+5. **Why "Apply" seemed to do nothing / reverted:** the firmware idle‑dims ~5 s after the
+   last host message. A one‑shot write applies, then the device reverts.
+6. **Why it "only worked with Info Hub open":** the firmware keeps the panel awake only while
+   the host **reads** its HID stream. A write‑only client rode on Info Hub's session; once
+   Info Hub closed, nobody drained the stream and the panel dropped to standby. The fix is a
+   background **read‑drain**.
+7. **`displayInSleep` flag — rejected.** The device has a "display in sleep mode" flag; with
+   it on, the panel stayed lit during sleep **but swapped to a standby video and still dimmed
+   after wake**. Side effects not worth it.
+
+---
+
+## The protocol (verified)
+
+**Transport:** USB HID, `VID 0x0B05` (ASUS) / `PID 0x1C76`, interface **MI_00**
+(vendor usage page `0xFF00`). Device side is `/dev/hidg0`, report length **1024**.
+(The composite device's `MI_01` is the ADB/video interface — a different channel.)
+
+**Message** (HTTP‑like text, **CRLF** line endings):
 
 ```
-/sys/class/backlight/backlight/brightness     (range 0–256)
+POST brightness 1.0\r\n
+SeqNumber=<n>\r\n
+ContentType=json\r\n
+ContentLength=<len(body)>\r\n
+\r\n
+{"value":N}                      # N = 0..100
 ```
 
-After the system resumes from sleep, that backlight drops to roughly **13/256 (~5%)** while Armoury Crate's UI still claims 100%. Nothing in Armoury Crate re-asserts it, so the panel stays dim.
-
-The fix is to write the backlight back to full over **adb**. The Ryuo exposes an **ADB interface** (`MI_01`), the device grants **root** over adb, and ASUS already ships an `adb.exe`. This app drives exactly that:
+**Framing** (byte‑stuffed):
 
 ```
-adb shell "echo 256 > /sys/class/backlight/backlight/brightness"
+0x5A | uint16_BE(wireLen) | escape(payload) | escape(checksum) | 0x5A
 ```
 
-> **Why not a USB/HID command?** Brightness is **not** a HID report on this device — changing the slider in Armoury Crate sends no USB command at all. It is purely an Android-side backlight setting, reachable only over adb. (An earlier USB/HID capture-and-replay approach was the wrong layer; this app talks to the Android backlight directly.)
+- `checksum` = additive sum of the **un‑escaped** payload bytes `& 0xFF`.
+- `escape`: `0x5A → 0x5B 0x01`, `0x5B → 0x5B 0x02` (`0x5B` is the escape byte).
+- `wireLen` = number of on‑wire bytes after the length field and before the trailing `0x5A`
+  (i.e. `len(escape(payload)) + len(escape(checksum))`).
+- Delivered as **one HID output report**: `[0x00] + frame + zero‑pad` to the report length.
+
+**Value mapping:** the firmware computes `screenBrightness = ((int)(N × 2.55)) / 255` and
+sets it as the home‑UI window's `WindowManager.LayoutParams.screenBrightness` (per‑window
+override). That's why sysfs / global settings are irrelevant.
+
+**Session / read‑drain:** the panel stays out of standby only while the host reads the
+device's HID **input** reports. The app opens the interface and runs a background thread that
+continuously reads and discards them, keeping the firmware's "PC connected" state true.
 
 ---
 
 ## Requirements
 
 - Windows 10/11, **.NET 8** runtime (or the SDK to build).
-- **ASUS Info Hub - ROG RYUO IV** installed — the app uses the `adb.exe` it ships at
-  `C:\Program Files\ASUS Info Hub - ROG RYUO IV\bin\adb.exe`.
-- The Ryuo IV AIO connected (so `adb` can see the `cm16` device).
-- **No administrator rights required** — adb access is not privileged here.
+- The Ryuo IV AIO connected over USB.
+- **No adb. No ASUS Info Hub. No administrator rights.** The app talks to the HID interface
+  directly via [HidSharp](https://www.nuget.org/packages/HidSharp).
 
 ---
 
 ## Using it
 
 1. Build (below) and run `RyuoBrightnessFix.exe`.
-2. **Brightness** tab: drag the slider and click **Apply**, or **100%** for full. Tick **"Restore this brightness automatically after sleep."**
-3. **Settings** tab: tick **Start with Windows**, **Start minimized**, and **Show tray icon** so it runs silently in the tray and self-heals the brightness on every wake.
+2. **Brightness** tab: drag the slider and click **Apply** (or **100%**).
+3. Keep **"Hold brightness"** ticked (default) — this opens the HID session, drains the
+   device stream, and re‑applies your level so the panel doesn't dim itself.
+4. **"Restore this brightness after waking"** re‑applies promptly on resume.
+5. **Settings** tab: **Start with Windows**, **Start minimized**, **Show tray icon** to run
+   silently from the tray.
 
 ![Settings tab](docs/settings-tab.png)
 
-The header shows the live state, e.g. *"Ryuo IV LCD connected (backlight 256/256)"* with a green **Connected** badge when adb can reach the panel.
-
-### Start in the tray only (no taskbar button)
-
-In **Settings**, enable **Start minimized** + **Show tray icon**. The app then launches straight to the system tray with no window and no taskbar entry; double-click the tray icon to open it.
+The header shows the live state with a green **Connected** badge when the HID interface is
+found.
 
 ---
 
@@ -58,27 +126,38 @@ In **Settings**, enable **Start minimized** + **Show tray icon**. The app then l
 
 | Piece | Role |
 |-------|------|
-| `BacklightService` | Runs ASUS's `adb.exe` (from its own folder so it finds `AdbWinApi.dll`) to read/write the backlight node. `SetPercent(p)` writes `round(p × 256 / 100)`. |
-| `ResumeMonitor` | Subscribes to `SystemEvents.PowerModeChanged`; on resume, waits ~10 s then re-applies the target brightness. |
-| `StartupRegistrationService` | "Start with Windows" via the per-user `HKCU\…\Run` key. |
-| `TrayIconService` | System-tray icon + menu (open / restore brightness / exit). |
-| `MainViewModel` / `MainWindow` | The slider, Apply, auto-restore, and Settings UI (MVVM, dark theme). |
+| `BacklightService` | Talks the USB‑HID protocol via HidSharp. Opens a **persistent session** with a background **read‑drain** thread (`StartHold`/`StopHold`) to keep the panel awake; `SetPercent(p)` sends the framed `{"value":p}` command over it. |
+| `MainViewModel` | Slider/Apply, the 3‑second keep‑alive that re‑applies brightness, device detection, and settings. Owns the hold lifecycle. |
+| `ResumeMonitor` | Subscribes to `SystemEvents.PowerModeChanged`; on resume, waits ~10 s then re‑applies the target (belt‑and‑suspenders on top of the keep‑alive). |
+| `StartupRegistrationService` | "Start with Windows" via the per‑user `HKCU\…\Run` key. |
+| `TrayIconService` | System‑tray icon + menu (open / restore brightness / exit). |
+| Diagnostics | Toggle **verbose debug logging** in Settings; logs to `%APPDATA%\RyuoBrightnessFix\logs\`, with an "Open logs folder" button. |
 
 ---
 
-## Manual adb commands (reference)
+## Caveats / limitations
 
-If you just want to do it by hand in PowerShell:
+- **Don't run this and ASUS Info Hub at the same time.** They use the same USB‑HID channel
+  and will fight over it. Use one or the other.
+- **During real sleep the panel still dims.** While the PC is suspended, nothing on the host
+  can run to hold the session, so the firmware dims it. The app restores brightness within a
+  few seconds of waking (keep‑alive + resume‑restore). Keeping it bright *through* sleep isn't
+  achievable from the host (the device's own `displayInSleep` flag has unwanted side effects).
+- **Brightness is effectively held at your chosen level while the app runs.** The device's
+  persisted value isn't rewritten by the brightness command, so holding relies on the app's
+  keep‑alive re‑applying it.
+- Targets the **Ryuo IV** specifically (`VID 0x0B05 / PID 0x1C76`, interface MI_00). Other
+  ASUS LCDs will differ.
 
-```powershell
-cd "C:\Program Files\ASUS Info Hub - ROG RYUO IV"
-.\bin\adb.exe get-state                                                          # -> device
-.\bin\adb.exe shell cat /sys/class/backlight/backlight/brightness                # read (0–256)
-.\bin\adb.exe shell "echo 256 > /sys/class/backlight/backlight/brightness"       # 100%
-.\bin\adb.exe shell "echo 3   > /sys/class/backlight/backlight/brightness"       # ~1%
-```
+---
 
-`cd` into that folder first — adb loads `AdbWinApi.dll` from there.
+## Manual reference
+
+A standalone Python sender (used during development) lives outside this repo; the essential
+logic is: enumerate HID `VID 0x0B05 / PID 0x1C76` interface MI_00, build the framed
+`POST brightness 1.0 … {"value":N}` message above, and write it as a 1025‑byte output report
+(`[0x00] + frame + zero‑pad`). To hold it, also open a read loop that drains the device's
+input reports.
 
 ---
 
@@ -90,15 +169,10 @@ dotnet build RyuoBrightnessFix.sln -c Release
 
 Output: `src\RyuoBrightnessFix\bin\Release\net8.0-windows\RyuoBrightnessFix.exe`.
 
-Dependencies (restored automatically): WPF, **Microsoft.Win32.SystemEvents** (resume detection), **Serilog** (logging to `%APPDATA%\RyuoBrightnessFix\logs\`).
+Dependencies (restored automatically): WPF, **HidSharp** (USB‑HID), **Microsoft.Win32.SystemEvents**
+(resume detection), **Serilog** (logging).
 
 ---
-
-## Notes / limitations
-
-- This targets the **Ryuo IV** specifically (device `cm16`, backlight max **256**). Other ASUS LCDs may differ.
-- It relies on ASUS Info Hub's bundled `adb.exe` and the device granting root over adb — both true on the Ryuo IV as shipped.
-- The dim-after-sleep behaviour is ultimately an ASUS firmware/Armoury Crate bug; this app is a practical workaround.
 
 ## License
 
