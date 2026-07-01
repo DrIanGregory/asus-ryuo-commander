@@ -33,6 +33,14 @@ public sealed class AppSettings
     /// </summary>
     public int SuspendBrightnessPercent { get; set; } = 100;
 
+    /// <summary>
+    /// Continuously re-apply the target brightness on a short timer. The panel's own
+    /// firmware dims itself ~5 s after the last message from the PC (that's how it idles
+    /// when ASUS Info Hub isn't streaming); the keep-alive resets that timer so the
+    /// brightness actually holds. Without this, a single Apply reverts within seconds.
+    /// </summary>
+    public bool KeepBrightnessAlive { get; set; } = true;
+
     // --- Diagnostics ---
     /// <summary>
     /// When true, the logger captures full verbose/debug detail (adb command lines,

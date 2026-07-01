@@ -49,10 +49,11 @@ public sealed class BacklightService
 
     /// <summary>
     /// Set the LCD brightness as a 0–100% value by sending the vendor HID command.
-    /// Returns (ok, message). <paramref name="verify"/> is accepted for call-site parity but
-    /// the HID channel is fire-and-forget (write-only), so success reflects the USB write.
+    /// Returns (ok, message). The HID channel is fire-and-forget (write-only), so success
+    /// reflects the USB write. Pass <paramref name="quiet"/> = true for the keep-alive
+    /// heartbeat so it logs at Debug instead of flooding the log every few seconds.
     /// </summary>
-    public (bool Ok, string Message) SetPercent(int percent, bool verify = true)
+    public (bool Ok, string Message) SetPercent(int percent, bool quiet = false)
     {
         percent = Math.Clamp(percent, 0, 100);
 
@@ -80,7 +81,8 @@ public sealed class BacklightService
             stream.Write(report);
             _log.Debug("HID write ok: percent={Percent} seq={Seq} frame={Frame}",
                 percent, seq, Convert.ToHexString(frame));
-            _log.Information("Brightness set to {Percent}% over USB HID.", percent);
+            if (quiet) _log.Debug("Keep-alive: brightness re-applied at {Percent}%.", percent);
+            else _log.Information("Brightness set to {Percent}% over USB HID.", percent);
             return (true, $"Brightness set to {percent}% over USB HID.");
         }
         catch (Exception ex)

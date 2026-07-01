@@ -63,8 +63,10 @@
                                 <Button Content="100%" Style="{StaticResource SecondaryButton}"
                                         Command="{Binding Restore100Command}" Width="90" Margin="10,0,0,0" />
                             </StackPanel>
+                            <CheckBox Content="Hold brightness (stops the panel dimming itself after a few seconds)"
+                                      IsChecked="{Binding KeepBrightnessAlive}" Margin="0,14,0,0" />
                             <CheckBox Content="Restore this brightness after waking"
-                                      IsChecked="{Binding AutoFixOnResume}" Margin="0,14,0,0" />
+                                      IsChecked="{Binding AutoFixOnResume}" Margin="0,8,0,0" />
                             <CheckBox Content="Set brightness while asleep"
                                       IsChecked="{Binding SetBrightnessOnSuspend}" Margin="0,8,0,0" />
 
@@ -88,7 +90,7 @@
 
                     <Border Style="{StaticResource Card}">
                         <TextBlock Style="{StaticResource SubtleText}" TextWrapping="Wrap"
-                                   Text="Sets the Ryuo IV LCD brightness directly over the vendor USB HID channel (the same one ASUS Info Hub uses) — no adb needed. The panel otherwise drops to its minimum when the PC sleeps and stays dim after waking. With the sleep options on, the brightness is pushed just before sleep (so it stays bright while asleep) and re-applied after wake." />
+                                   Text="Sets the Ryuo IV LCD brightness directly over the vendor USB HID channel (the same one ASUS Info Hub uses) — no adb needed. The panel's firmware dims itself a few seconds after the last message from the PC, so 'Hold brightness' re-applies it on a short timer to keep it steady while the PC is awake. (During actual sleep nothing on the PC can run, so the panel will still dim until you wake — it's restored on resume.)" />
                     </Border>
                 </StackPanel>
             </TabItem>

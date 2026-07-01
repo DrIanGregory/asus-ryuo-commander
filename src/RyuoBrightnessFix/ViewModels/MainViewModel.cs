@@ -27,6 +27,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private ResumeMonitor? _resumeMonitor;
 
+    // Re-applies brightness on a short timer so the panel's firmware idle-dim (which fires
+    // ~5 s after the last message from the PC) never kicks in. 3 s leaves a safe margin.
+    private static readonly TimeSpan KeepAliveInterval = TimeSpan.FromSeconds(3);
+    private System.Threading.Timer? _keepAliveTimer;
+    private int _keepAliveBusy;   // 0/1 guard so ticks never overlap on the device
+
     /// <summary>Raised when the tray icon visibility should change (App owns the tray).</summary>
     public event Action<bool>? TrayVisibilityRequested;
 
@@ -53,6 +59,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _showTrayIcon = settings.ShowTrayIcon;
         _autoFixOnResume = settings.AutoFixOnResume;
         _setBrightnessOnSuspend = settings.SetBrightnessOnSuspend;
+        _keepBrightnessAlive = settings.KeepBrightnessAlive;
         _debugLogging = settings.DebugLogging;
 
         ApplyBrightnessCommand = new RelayCommand(() => ApplyBrightness(BrightnessPercent), () => CanControlDevice);
@@ -200,6 +207,19 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    private bool _keepBrightnessAlive;
+    public bool KeepBrightnessAlive
+    {
+        get => _keepBrightnessAlive;
+        set
+        {
+            if (!SetProperty(ref _keepBrightnessAlive, value)) return;
+            _settings.KeepBrightnessAlive = value;
+            SaveSettings();
+            UpdateKeepAlive();
+        }
+    }
+
     private bool _debugLogging;
     public bool DebugLogging
     {
@@ -305,6 +325,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 DeviceStatus = "Ryuo IV LCD connected (USB HID).";
                 _log.Information("LCD reachable over USB HID.");
                 RestartResumeMonitor();
+                UpdateKeepAlive();
             }
             else
             {
@@ -313,6 +334,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 DeviceStatus = "Ryuo IV LCD not found on USB (is it connected and powered?).";
                 _log.Warning("Ryuo IV HID interface not found (VID 0B05 / PID 1C76 / MI_00).");
                 StopResumeMonitor();
+                UpdateKeepAlive();
             }
         }
         catch (Exception ex)
@@ -347,7 +369,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         // stays bright instead of dropping to its minimum. Fast/unverified write — the
         // suspend window is short.
         Func<bool>? onSuspend = SetBrightnessOnSuspend
-            ? () => _backlight.SetPercent(SuspendBrightnessPercent, verify: false).Ok
+            ? () => _backlight.SetPercent(SuspendBrightnessPercent).Ok
             : null;
 
         _resumeMonitor = new ResumeMonitor(10_000, _log, onResume, onSuspend);
@@ -361,6 +383,49 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         _resumeMonitor?.Dispose();
         _resumeMonitor = null;
+    }
+
+    // ---------------------------------------------------------------- keep-alive
+
+    /// <summary>
+    /// Start or stop the brightness keep-alive so it runs exactly when it should:
+    /// the device is controllable AND the user has the option enabled.
+    /// </summary>
+    private void UpdateKeepAlive()
+    {
+        bool shouldRun = CanControlDevice && KeepBrightnessAlive;
+
+        if (shouldRun && _keepAliveTimer is null)
+        {
+            _keepAliveTimer = new System.Threading.Timer(KeepAliveTick, null, KeepAliveInterval, KeepAliveInterval);
+            _log.Information("Brightness keep-alive ON (re-apply every {Sec}s to prevent the panel auto-dimming).",
+                KeepAliveInterval.TotalSeconds);
+        }
+        else if (!shouldRun && _keepAliveTimer is not null)
+        {
+            _keepAliveTimer.Dispose();
+            _keepAliveTimer = null;
+            _log.Information("Brightness keep-alive OFF.");
+        }
+    }
+
+    private void KeepAliveTick(object? _)
+    {
+        // Skip if a previous tick (or an Apply) is still writing to the device.
+        if (Interlocked.Exchange(ref _keepAliveBusy, 1) == 1) return;
+        try
+        {
+            if (!CanControlDevice || !KeepBrightnessAlive) return;
+            _backlight.SetPercent(BrightnessPercent, quiet: true);
+        }
+        catch (Exception ex)
+        {
+            _log.Debug(ex, "Keep-alive tick failed (will retry next interval).");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _keepAliveBusy, 0);
+        }
     }
 
     // ---------------------------------------------------------------- logging plumbing
@@ -403,5 +468,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         SaveSettings();
     }
 
-    public void Dispose() => StopResumeMonitor();
+    public void Dispose()
+    {
+        _keepAliveTimer?.Dispose();
+        _keepAliveTimer = null;
+        StopResumeMonitor();
+    }
 }
