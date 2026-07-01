@@ -14,3 +14,7 @@ ryuo.json
 .vs/
 .idea/
 *.suo
+
+## Bundled ffmpeg (fetched via tools\fetch-ffmpeg.ps1 — too large for git)
+ffmpeg.exe
+src/RyuoBrightnessFix/ffmpeg.exe

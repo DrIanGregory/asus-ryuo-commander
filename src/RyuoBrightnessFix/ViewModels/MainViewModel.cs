@@ -22,6 +22,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private readonly AppSettings _settings;
     private readonly StartupRegistrationService _startup;
     private readonly BacklightService _backlight;
+    private readonly MediaService _media;
     private readonly LoggingLevelSwitch _levelSwitch;
     private readonly Queue<string> _logLines = new();
 
@@ -40,6 +41,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public RelayCommand Restore100Command { get; }
     public RelayCommand ReloadCommand { get; }
     public RelayCommand OpenLogsFolderCommand { get; }
+    public RelayCommand ChooseVideoCommand { get; }
+    public RelayCommand SetVideoCommand { get; }
 
     public MainViewModel(ILogger log, UiLogSink uiSink, AppSettings settings, StartupRegistrationService startup,
         LoggingLevelSwitch levelSwitch)
@@ -49,6 +52,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _startup = startup;
         _levelSwitch = levelSwitch;
         _backlight = new BacklightService(log);
+        _media = new MediaService(log, _backlight);
 
         // Mirror persisted settings into bindable fields.
         _brightnessPercent = settings.TargetBrightnessPercent;
@@ -64,6 +68,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         Restore100Command = new RelayCommand(() => ApplyBrightness(100), () => CanControlDevice);
         ReloadCommand = new RelayCommand(RefreshDevice);
         OpenLogsFolderCommand = new RelayCommand(OpenLogsFolder);
+        ChooseVideoCommand = new RelayCommand(ChooseVideo, () => !VideoBusy);
+        SetVideoCommand = new RelayCommand(SetVideo, () => CanSetVideo);
 
         uiSink.LineWritten += OnLogLine;
 
@@ -219,6 +225,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             {
                 ApplyBrightnessCommand.RaiseCanExecuteChanged();
                 Restore100Command.RaiseCanExecuteChanged();
+                SetVideoCommand.RaiseCanExecuteChanged();
+                OnPropertyChanged(nameof(CanSetVideo));
             }
         }
     }
@@ -279,6 +287,100 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         catch (Exception ex)
         {
             _log.Error(ex, "Could not open the logs folder ({Dir}).", AppConstants.LogDir);
+        }
+    }
+
+    // ---------------------------------------------------------------- panel video
+
+    private string? _selectedVideoPath;
+    public string? SelectedVideoPath
+    {
+        get => _selectedVideoPath;
+        private set
+        {
+            if (SetProperty(ref _selectedVideoPath, value))
+            {
+                OnPropertyChanged(nameof(SelectedVideoName));
+                SetVideoCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public string SelectedVideoName =>
+        string.IsNullOrEmpty(_selectedVideoPath) ? "No video chosen" : Path.GetFileName(_selectedVideoPath);
+
+    private bool _videoBusy;
+    public bool VideoBusy
+    {
+        get => _videoBusy;
+        private set
+        {
+            if (SetProperty(ref _videoBusy, value))
+            {
+                ChooseVideoCommand.RaiseCanExecuteChanged();
+                SetVideoCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    private string _videoStatus = "";
+    public string VideoStatus { get => _videoStatus; private set => SetProperty(ref _videoStatus, value); }
+
+    public bool CanSetVideo =>
+        CanControlDevice && !VideoBusy && !string.IsNullOrEmpty(SelectedVideoPath);
+
+    private void ChooseVideo()
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Choose a video for the Ryuo IV panel",
+            Filter = "Video files|*.mp4;*.mov;*.mkv;*.avi;*.webm;*.m4v;*.wmv|All files|*.*",
+            CheckFileExists = true,
+        };
+        if (dlg.ShowDialog() == true)
+        {
+            SelectedVideoPath = dlg.FileName;
+            VideoStatus = "";
+        }
+    }
+
+    private async void SetVideo()
+    {
+        if (!CanSetVideo) return;
+        var path = SelectedVideoPath!;
+
+        if (!_media.FfmpegAvailable)
+        {
+            VideoStatus = "ffmpeg not found — see tools\\fetch-ffmpeg.ps1 (put ffmpeg.exe next to the app).";
+            _log.Warning("Set video aborted: ffmpeg not found.");
+            return;
+        }
+        if (!_media.AdbAvailable)
+        {
+            VideoStatus = "adb not found — install 'ASUS Info Hub - ROG RYUO IV'.";
+            _log.Warning("Set video aborted: adb not found.");
+            return;
+        }
+
+        VideoBusy = true;
+        VideoStatus = "Starting…";
+        _log.Information("Setting panel video from {Path}", path);
+        try
+        {
+            var progress = new Progress<string>(s => VideoStatus = s);
+            var (ok, msg) = await _media.SetPanelVideoAsync(path, progress);
+            VideoStatus = msg;
+            if (ok) _log.Information("Panel video set: {Msg}", msg);
+            else _log.Error("Panel video failed: {Msg}", msg);
+        }
+        catch (Exception ex)
+        {
+            VideoStatus = "Error: " + ex.Message;
+            _log.Error(ex, "Unexpected error setting panel video.");
+        }
+        finally
+        {
+            VideoBusy = false;
         }
     }
 

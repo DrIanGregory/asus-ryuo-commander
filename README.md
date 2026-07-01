@@ -100,8 +100,11 @@ continuously reads and discards them, keeping the firmware's "PC connected" stat
 
 - Windows 10/11, **.NET 8** runtime (or the SDK to build).
 - The Ryuo IV AIO connected over USB.
-- **No adb. No ASUS Info Hub. No administrator rights.** The app talks to the HID interface
+- **Brightness needs no adb, no ASUS Info Hub, no admin** — it talks to the HID interface
   directly via [HidSharp](https://www.nuget.org/packages/HidSharp).
+- **The Video feature additionally needs** bundled `ffmpeg` (via `tools\fetch-ffmpeg.ps1`) and
+  ASUS's `adb.exe` (from the ASUS Info Hub install) to upload the file. Don't run this app and
+  ASUS Info Hub at the same time — they share the USB HID channel.
 
 ---
 
@@ -122,11 +125,39 @@ found.
 
 ---
 
+## Change the panel video
+
+The **Video** tab lets you set a custom looping video on the panel — no ASUS Info Hub needed.
+Pick any video, click **Set as panel video**, and the app:
+
+1. **Transcodes** it with bundled ffmpeg to the panel format
+   (2240×1080, H.264 High/yuv420p, 30 fps, no audio, mp4).
+2. **Pushes** it to `/sdcard/pcMedia/<timestamp>.mp4` over adb (the file bytes travel on the
+   device's ADB interface — this is what Info Hub does; the HID byte-path is a dead end).
+3. **Activates** it with a HID `POST waterBlockScreenId` config (verified by USB-capturing Info Hub):
+   ```json
+   {"id":"Customization","screenMode":"Full Screen","playMode":"Single",
+    "media":["<file>.mp4"],
+    "settings":{"titleColor":"#25cfe5","contentColor":"#25cfe5",
+                "filter":{"value":null,"opacity":100},"badges":[]},
+    "sysinfoDisplay":["","","","","",""]}
+   ```
+   The device re-asserts its persisted config every few seconds, so the app sends this a few
+   times to reliably override the previous video.
+
+The video plays **on the device** (looped locally by its Android board) — the PC does no
+continuous streaming, so there's no ongoing CPU cost. Keep **Hold brightness** on so the
+panel stays awake (session alive) to show it.
+
+**ffmpeg**: run `tools\fetch-ffmpeg.ps1` once to download `ffmpeg.exe` next to the app (it is
+git-ignored — too large for the repo). **adb**: uses ASUS's bundled `adb.exe`.
+
 ## How it works
 
 | Piece | Role |
 |-------|------|
-| `BacklightService` | Talks the USB‑HID protocol via HidSharp. Opens a **persistent session** with a background **read‑drain** thread (`StartHold`/`StopHold`) to keep the panel awake; `SetPercent(p)` sends the framed `{"value":p}` command over it. |
+| `BacklightService` | Talks the USB‑HID protocol via HidSharp. Opens a **persistent session** with a background **read‑drain** thread (`StartHold`/`StopHold`) to keep the panel awake; `SetPercent(p)` sends the framed `{"value":p}` command over it; `SetPanelVideo(name)` sends the `waterBlockScreenId` config. |
+| `MediaService` | The Video tab: ffmpeg transcode → `adb push` to `/sdcard/pcMedia` → activate via `BacklightService.SetPanelVideo`. |
 | `MainViewModel` | Slider/Apply, the 3‑second keep‑alive that re‑applies brightness, device detection, and settings. Owns the hold lifecycle. |
 | `ResumeMonitor` | Subscribes to `SystemEvents.PowerModeChanged`; on resume, waits ~10 s then re‑applies the target (belt‑and‑suspenders on top of the keep‑alive). |
 | `StartupRegistrationService` | "Start with Windows" via the per‑user `HKCU\…\Run` key. |
@@ -171,6 +202,14 @@ Output: `src\RyuoBrightnessFix\bin\Release\net8.0-windows\RyuoBrightnessFix.exe`
 
 Dependencies (restored automatically): WPF, **HidSharp** (USB‑HID), **Microsoft.Win32.SystemEvents**
 (resume detection), **Serilog** (logging).
+
+For the **Video** feature, fetch ffmpeg once (git-ignored, ~100 MB):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\fetch-ffmpeg.ps1
+```
+
+The build copies `ffmpeg.exe` next to the exe if present; brightness works without it.
 
 ---
 
