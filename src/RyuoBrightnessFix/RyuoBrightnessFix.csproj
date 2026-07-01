@@ -33,10 +33,4 @@
     <Resource Include="Resources\Icons\app.ico" />
   </ItemGroup>
 
-  <!-- Bundled ffmpeg for the "Panel Video" transcode. The binary is git-ignored;
-       run tools\fetch-ffmpeg.ps1 to place it, then it is copied next to the exe. -->
-  <ItemGroup Condition="Exists('ffmpeg.exe')">
-    <None Include="ffmpeg.exe" CopyToOutputDirectory="PreserveNewest" />
-  </ItemGroup>
-
 </Project>

@@ -86,50 +86,10 @@ public sealed class BacklightService : IDisposable
     public (bool Ok, string Message) SetPercent(int percent, bool quiet = false)
     {
         percent = Math.Clamp(percent, 0, 100);
-        byte[] frame = BuildFrame("brightness", "{\"value\":" + percent + "}");
-        var (ok, msg) = SendFrame(frame);
-        if (ok)
-        {
-            if (quiet) _log.Debug("Keep-alive: brightness re-applied at {Percent}%.", percent);
-            else _log.Information("Brightness set to {Percent}% over USB HID.", percent);
-            return (true, $"Brightness set to {percent}% over USB HID.");
-        }
-        _log.Error("Brightness set failed (percent={Percent}): {Msg}", percent, msg);
-        return (ok, msg);
-    }
+        int seq = Interlocked.Increment(ref _seq) & 0x7FFFFFFF;
+        byte[] frame = BuildFrame(percent, seq);
 
-    /// <summary>
-    /// Make the panel play a video file already present in <c>/sdcard/pcMedia</c> (put it there
-    /// first via <see cref="MediaService"/>'s adb push). Sends the same <c>waterBlockScreenId</c>
-    /// config Info Hub uses: id=Customization, Full Screen, single-loop, the given file.
-    /// </summary>
-    public (bool Ok, string Message) SetPanelVideo(string deviceFileName)
-    {
-        // Matches the captured Info Hub message exactly (id "Customization" + CamelCase playMode).
-        string body =
-            "{\"id\":\"Customization\",\"screenMode\":\"Full Screen\",\"playMode\":\"Single\"," +
-            "\"media\":[" + JsonString(deviceFileName) + "]," +
-            "\"settings\":{\"titleColor\":\"#25cfe5\",\"contentColor\":\"#25cfe5\"," +
-            "\"filter\":{\"value\":null,\"opacity\":100},\"badges\":[]}," +
-            "\"sysinfoDisplay\":[\"\",\"\",\"\",\"\",\"\",\"\"]}";
-        // The device re-asserts its persisted config every few seconds, so a single send can
-        // lose the race. Assert a few times (rebuilding the frame each time for a fresh
-        // SeqNumber) to reliably override the previous video.
-        (bool Ok, string Message) last = (false, "not sent");
-        for (int i = 0; i < 4; i++)
-        {
-            last = SendFrame(BuildFrame("waterBlockScreenId", body));
-            if (!last.Ok) break;
-            if (i < 3) Thread.Sleep(600);
-        }
-        if (last.Ok) _log.Information("Panel video set to {File}.", deviceFileName);
-        else _log.Error("Panel video set failed ({File}): {Msg}", deviceFileName, last.Message);
-        return last.Ok ? (true, $"Panel video set to {deviceFileName}.") : last;
-    }
-
-    /// <summary>Write a framed message over the hold session, or a one-shot connection.</summary>
-    private (bool Ok, string Message) SendFrame(byte[] frame)
-    {
+        // Fast path: write over the open hold session.
         HidStream? held;
         int heldLen;
         lock (_sync) { held = _stream; heldLen = _outputReportLength; }
@@ -138,15 +98,18 @@ public sealed class BacklightService : IDisposable
             try
             {
                 WriteReport(held, frame, heldLen);
-                return (true, "ok");
+                LogSet(percent, quiet);
+                return (true, $"Brightness set to {percent}% over USB HID.");
             }
             catch (Exception ex)
             {
-                _log.Error(ex, "HID write over hold session failed; reopening.");
+                _log.Error(ex, "HID write over hold session failed (percent={Percent}); reopening.", percent);
                 CloseSession();
+                // fall through to a one-shot attempt
             }
         }
 
+        // One-shot path (no hold session, or the held write just failed).
         var dev = FindDevice();
         if (dev is null)
             return (false, "Ryuo IV LCD not found on USB (VID 0B05 / PID 1C76, interface MI_00).");
@@ -156,26 +119,20 @@ public sealed class BacklightService : IDisposable
             options.SetOption(OpenOption.Interruptible, true);
             using HidStream stream = dev.Open(options);
             WriteReport(stream, frame, SafeLen(dev.GetMaxOutputReportLength));
-            return (true, "ok");
+            LogSet(percent, quiet);
+            return (true, $"Brightness set to {percent}% over USB HID.");
         }
         catch (Exception ex)
         {
-            _log.Error(ex, "HID write failed.");
+            _log.Error(ex, "HID write failed (percent={Percent}).", percent);
             return (false, "HID write failed: " + ex.Message);
         }
     }
 
-    private static string JsonString(string s)
+    private void LogSet(int percent, bool quiet)
     {
-        var sb = new StringBuilder(s.Length + 2);
-        sb.Append('"');
-        foreach (char c in s)
-        {
-            if (c == '"' || c == '\\') sb.Append('\\').Append(c);
-            else if (c >= ' ') sb.Append(c);
-        }
-        sb.Append('"');
-        return sb.ToString();
+        if (quiet) _log.Debug("Keep-alive: brightness re-applied at {Percent}%.", percent);
+        else _log.Information("Brightness set to {Percent}% over USB HID.", percent);
     }
 
     private void WriteReport(HidStream stream, byte[] frame, int reportLen)
@@ -292,13 +249,13 @@ public sealed class BacklightService : IDisposable
         }
     }
 
-    /// <summary>Build a framed <c>POST &lt;cmdType&gt;</c> command carrying a JSON body.</summary>
-    internal byte[] BuildFrame(string cmdType, string body)
+    /// <summary>Build the framed brightness command for a 0–100 value.</summary>
+    internal static byte[] BuildFrame(int percent, int seq)
     {
-        int seq = Interlocked.Increment(ref _seq) & 0x7FFFFFFF;
+        string body = "{\"value\":" + percent + "}";
         int contentLength = Encoding.UTF8.GetByteCount(body);
         string text =
-            "POST " + cmdType + " 1.0\r\n" +
+            "POST brightness 1.0\r\n" +
             "SeqNumber=" + seq + "\r\n" +
             "ContentType=json\r\n" +
             "ContentLength=" + contentLength + "\r\n" +
