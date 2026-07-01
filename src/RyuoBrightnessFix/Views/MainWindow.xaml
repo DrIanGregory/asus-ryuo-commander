@@ -88,7 +88,7 @@
 
                     <Border Style="{StaticResource Card}">
                         <TextBlock Style="{StaticResource SubtleText}" TextWrapping="Wrap"
-                                   Text="Sets the Ryuo IV LCD backlight directly through ASUS's adb. The panel otherwise drops to its minimum when the PC sleeps and stays dim after waking while Armoury Crate still shows 100%. With keep-across-sleep on, the brightness is pushed just before sleep (so it stays bright while asleep) and re-applied after wake." />
+                                   Text="Sets the Ryuo IV LCD brightness directly over the vendor USB HID channel (the same one ASUS Info Hub uses) — no adb needed. The panel otherwise drops to its minimum when the PC sleeps and stays dim after waking. With the sleep options on, the brightness is pushed just before sleep (so it stays bright while asleep) and re-applied after wake." />
                     </Border>
                 </StackPanel>
             </TabItem>

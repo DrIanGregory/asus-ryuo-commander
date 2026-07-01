@@ -291,49 +291,36 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    /// <summary>Refresh whether the Ryuo LCD is reachable over adb.</summary>
+    /// <summary>Refresh whether the Ryuo LCD is reachable over USB HID.</summary>
     private void RefreshDevice()
     {
-        _log.Debug("RefreshDevice: AdbAvailable={Adb}.", _backlight.AdbAvailable);
-        ConfigPathDisplay = _backlight.AdbAvailable
-            ? "Using ASUS Info Hub adb (Android backlight control)."
-            : "ASUS Info Hub not found.";
+        ConfigPathDisplay = "Direct USB HID control (ASUS VID 0B05 / PID 1C76).";
 
         try
         {
-            if (!_backlight.AdbAvailable)
-            {
-                CanControlDevice = false;
-                SliderEnabled = false;
-                DeviceStatus = "ASUS Info Hub (adb) not found — install 'ASUS Info Hub - ROG RYUO IV'.";
-                StopResumeMonitor();
-                return;
-            }
-
             if (_backlight.DeviceConnected())
             {
                 CanControlDevice = true;
                 SliderEnabled = true;
-                var cur = _backlight.GetPercent();
-                if (cur is int c) { _brightnessPercent = c; OnPropertyChanged(nameof(BrightnessPercent)); }
-                DeviceStatus = $"Ryuo IV LCD connected (backlight {_backlight.GetBacklight()}/{BacklightService.MaxBacklight}).";
-                _log.Information("LCD reachable over adb. {Status}", DeviceStatus);
+                DeviceStatus = "Ryuo IV LCD connected (USB HID).";
+                _log.Information("LCD reachable over USB HID.");
+                RestartResumeMonitor();
             }
             else
             {
                 CanControlDevice = false;
                 SliderEnabled = false;
-                DeviceStatus = "Ryuo LCD not detected by adb (is it connected / Armoury Crate running?).";
+                DeviceStatus = "Ryuo IV LCD not found on USB (is it connected and powered?).";
+                _log.Warning("Ryuo IV HID interface not found (VID 0B05 / PID 1C76 / MI_00).");
+                StopResumeMonitor();
             }
-
-            RestartResumeMonitor();
         }
         catch (Exception ex)
         {
             CanControlDevice = false;
             SliderEnabled = false;
-            DeviceStatus = "adb error: " + ex.Message;
-            _log.Error(ex, "Failed to query LCD over adb.");
+            DeviceStatus = "HID error: " + ex.Message;
+            _log.Error(ex, "Failed to query LCD over USB HID.");
         }
         finally
         {
