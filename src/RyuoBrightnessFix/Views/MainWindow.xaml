@@ -134,11 +134,33 @@
                                 <TextBlock x:Name="PreviewError" Style="{StaticResource SubtleText}"
                                            TextWrapping="Wrap" Margin="0,4,0,0" Visibility="Collapsed" />
                             </StackPanel>
-                            <Button Content="Set as panel video" Style="{StaticResource AccentButton}"
+                            <Button Content="Add to panel playlist" Style="{StaticResource AccentButton}"
                                     Command="{Binding SetVideoCommand}" Width="180" HorizontalAlignment="Left"
                                     Margin="0,12,0,0" />
                             <TextBlock Text="{Binding VideoStatus}" Style="{StaticResource SubtleText}"
                                        Margin="0,10,0,0" TextWrapping="Wrap" />
+
+                            <!-- The playlist the panel rotates through -->
+                            <Grid Margin="0,12,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <ListBox Grid.Column="0" Height="96"
+                                         Background="{StaticResource WindowBackgroundBrush}"
+                                         Foreground="{StaticResource ForegroundBrush}"
+                                         BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                                         ItemsSource="{Binding Playlist}"
+                                         SelectedItem="{Binding SelectedPlaylistItem, Mode=TwoWay}" />
+                                <StackPanel Grid.Column="1" Margin="8,0,0,0">
+                                    <Button Content="Remove" Style="{StaticResource SecondaryButton}"
+                                            Command="{Binding RemoveVideoCommand}" Padding="10,4" />
+                                    <Button Content="Up" Style="{StaticResource SecondaryButton}"
+                                            Command="{Binding MoveVideoUpCommand}" Padding="10,4" Margin="0,6,0,0" />
+                                    <Button Content="Down" Style="{StaticResource SecondaryButton}"
+                                            Command="{Binding MoveVideoDownCommand}" Padding="10,4" Margin="0,6,0,0" />
+                                </StackPanel>
+                            </Grid>
                             <TextBlock Text="{Binding ActiveVideoDisplay}" Style="{StaticResource SubtleText}"
                                        Margin="0,6,0,0" TextWrapping="Wrap" />
                         </StackPanel>
@@ -146,7 +168,7 @@
 
                     <Border Style="{StaticResource Card}">
                         <TextBlock Style="{StaticResource SubtleText}" TextWrapping="Wrap"
-                                   Text="Transcodes your video to the panel's playable format (1920×960 — its decoder's limit, same as ASUS's stock videos), uploads it, and loops it full-screen — the same path ASUS Info Hub uses (no Info Hub needed). Needs ffmpeg (bundled) and ASUS's adb. The panel forgets its content when it reboots; the app re-asserts this video automatically every time it reconnects, so the screen never sits black. Note: at 100% brightness a dark video still looks dim — that's the footage, not the backlight." />
+                                   Text="Queue as many videos as you like: each is transcoded to the panel's playable format (1920×960 — its decoder's limit, same as ASUS's stock videos), uploaded, and rotated by the panel itself. One video loops; multiple videos rotate shuffled (the firmware's only multi-video mode). Needs ffmpeg (bundled) and ASUS's adb. The panel forgets its content when it reboots; the app re-asserts the playlist automatically every time it reconnects, so the screen never sits black. Note: at 100% brightness a dark video still looks dim — that's the footage, not the backlight." />
                     </Border>
                 </StackPanel>
             </TabItem>

@@ -54,6 +54,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public RelayCommand CopyVersionCommand { get; }
     public RelayCommand ChooseVideoCommand { get; }
     public RelayCommand SetVideoCommand { get; }
+    public RelayCommand RemoveVideoCommand { get; }
+    public RelayCommand MoveVideoUpCommand { get; }
+    public RelayCommand MoveVideoDownCommand { get; }
 
     public MainViewModel(ILogger log, UiLogSink uiSink, AppSettings settings, StartupRegistrationService startup,
         LoggingLevelSwitch levelSwitch)
@@ -83,6 +86,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         CopyVersionCommand = new RelayCommand(CopyVersionToClipboard);
         ChooseVideoCommand = new RelayCommand(ChooseVideo, () => !VideoBusy);
         SetVideoCommand = new RelayCommand(SetVideo, () => CanSetVideo);
+        RemoveVideoCommand = new RelayCommand(RemovePlaylistItem, () => SelectedPlaylistItem is not null && !VideoBusy);
+        MoveVideoUpCommand = new RelayCommand(() => MovePlaylistItem(-1), () => CanMovePlaylistItem(-1));
+        MoveVideoDownCommand = new RelayCommand(() => MovePlaylistItem(+1), () => CanMovePlaylistItem(+1));
+        foreach (var f in settings.PanelVideoFiles) Playlist.Add(f);
 
         uiSink.LineWritten += OnLogLine;
         _backlight.DeviceListChanged += OnDeviceListChanged;
@@ -474,7 +481,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public string PreviewTitle => SelectedVideoPath is not null
         ? $"LCD preview of the selected video — {SelectedVideoScaleMode} scale mode"
-        : "Now playing on the LCD";
+        : Playlist.Count > 1 && SelectedPlaylistItem is not null
+            ? $"LCD preview — playlist entry: {SelectedPlaylistItem}"
+            : "Now playing on the LCD";
 
     /// <summary>
     /// How the preview stretches into the LCD frame. A file being chosen simulates the scale
@@ -499,10 +508,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(PreviewStretch));
     }
 
-    /// <summary>Fetch a local copy of the active panel video for the LCD mock (cache or adb pull).</summary>
+    /// <summary>Fetch a local copy of a playlist video for the LCD mock (cache or adb pull):
+    /// the highlighted playlist entry, else the first one.</summary>
     private void LoadActiveVideoPreview()
     {
-        string? file = _settings.PanelVideoFile;
+        string? file = SelectedPlaylistItem ?? Playlist.FirstOrDefault();
         if (string.IsNullOrWhiteSpace(file)) return;
         _ = Task.Run(async () =>
         {
@@ -514,7 +524,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             }
             catch (Exception ex)
             {
-                _log.Debug(ex, "Loading the active-video preview failed.");
+                _log.Debug(ex, "Loading the playlist-video preview failed.");
             }
         });
     }
@@ -566,10 +576,95 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _ => "Fit: shows the whole video, with black bars where its shape differs from the screen.",
     };
 
-    public string ActiveVideoDisplay =>
-        string.IsNullOrEmpty(_settings.PanelVideoFile)
-            ? "No panel video configured."
-            : $"Active panel video: {_settings.PanelVideoFile} (re-asserted automatically)";
+    // ------------------------------------------------ playlist
+
+    public System.Collections.ObjectModel.ObservableCollection<string> Playlist { get; } = new();
+
+    private string? _selectedPlaylistItem;
+    public string? SelectedPlaylistItem
+    {
+        get => _selectedPlaylistItem;
+        set
+        {
+            if (SetProperty(ref _selectedPlaylistItem, value))
+            {
+                RemoveVideoCommand.RaiseCanExecuteChanged();
+                MoveVideoUpCommand.RaiseCanExecuteChanged();
+                MoveVideoDownCommand.RaiseCanExecuteChanged();
+                RaisePreviewChanged();
+                LoadActiveVideoPreview();   // preview the highlighted playlist entry
+            }
+        }
+    }
+
+    public string ActiveVideoDisplay => Playlist.Count switch
+    {
+        0 => "Playlist is empty — the panel has nothing to show.",
+        1 => $"Playing on the LCD: {Playlist[0]} (looped, re-asserted automatically)",
+        _ => $"Playlist: {Playlist.Count} videos, rotated by the panel " +
+             "(shuffled — the firmware has no in-order mode). Re-asserted automatically.",
+    };
+
+    /// <summary>"Single" loops one video; "Random" is the firmware's only multi-video rotation.</summary>
+    private string CurrentPlayMode => Playlist.Count > 1 ? "Random" : "Single";
+
+    private void SavePlaylist()
+    {
+        _settings.PanelVideoFiles = Playlist.ToList();
+        _settings.PanelPlayMode = CurrentPlayMode;
+        SaveSettings();
+        OnPropertyChanged(nameof(ActiveVideoDisplay));
+    }
+
+    /// <summary>Send the whole playlist + widget slots to the panel in the background.</summary>
+    private void ApplyPlaylist()
+    {
+        var files = Playlist.ToList();
+        if (files.Count == 0) return;
+        string mode = CurrentPlayMode;
+        string[] slots = EffectiveMetricSlots();
+        Task.Run(() =>
+        {
+            try
+            {
+                var (ok, msg) = _backlight.SetPanelPlaylist(files, mode, slots);
+                if (!ok) _log.Warning("Applying the playlist failed: {Msg}", msg);
+            }
+            catch (Exception ex) { _log.Warning(ex, "Applying the playlist failed."); }
+        });
+    }
+
+    private void RemovePlaylistItem()
+    {
+        if (SelectedPlaylistItem is null) return;
+        int index = Playlist.IndexOf(SelectedPlaylistItem);
+        if (index < 0) return;
+        Playlist.RemoveAt(index);
+        SelectedPlaylistItem = Playlist.Count > 0 ? Playlist[Math.Min(index, Playlist.Count - 1)] : null;
+        SavePlaylist();
+        ApplyPlaylist();
+    }
+
+    private bool CanMovePlaylistItem(int delta)
+    {
+        if (VideoBusy || SelectedPlaylistItem is null) return false;
+        int index = Playlist.IndexOf(SelectedPlaylistItem);
+        int target = index + delta;
+        return index >= 0 && target >= 0 && target < Playlist.Count;
+    }
+
+    private void MovePlaylistItem(int delta)
+    {
+        if (SelectedPlaylistItem is null) return;
+        int index = Playlist.IndexOf(SelectedPlaylistItem);
+        int target = index + delta;
+        if (index < 0 || target < 0 || target >= Playlist.Count) return;
+        Playlist.Move(index, target);
+        MoveVideoUpCommand.RaiseCanExecuteChanged();
+        MoveVideoDownCommand.RaiseCanExecuteChanged();
+        SavePlaylist();
+        ApplyPlaylist();
+    }
 
     public bool CanSetVideo =>
         CanControlDevice && !VideoBusy && !string.IsNullOrEmpty(SelectedVideoPath);
@@ -613,26 +708,27 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         try
         {
             var progress = new Progress<string>(s => VideoStatus = s);
-            var (ok, msg, deviceName) = await _media.SetPanelVideoAsync(
-                path, SelectedVideoScaleMode, EffectiveMetricSlots(), progress);
-            VideoStatus = msg;
+            var (ok, msg, deviceName) = await _media.PrepareVideoAsync(path, SelectedVideoScaleMode, progress);
             if (ok && deviceName is not null)
             {
-                // Remember it so it survives panel reboots (the panel forgets its screen
-                // config; OnSessionOpened re-asserts this file every time we reconnect).
-                _settings.PanelVideoFile = deviceName;
-                SaveSettings();
-                OnPropertyChanged(nameof(ActiveVideoDisplay));
-                _log.Information("Panel video set: {Msg}", msg);
+                // Add to the playlist and activate it; persisted so it survives panel
+                // reboots (OnSessionOpened re-asserts the whole playlist on reconnect).
+                Playlist.Add(deviceName);
+                SavePlaylist();
+                ApplyPlaylist();
+                VideoStatus = Playlist.Count == 1
+                    ? "The panel is now playing your video."
+                    : $"Added to the playlist ({Playlist.Count} videos — the panel rotates them).";
+                _log.Information("Playlist updated: {Msg}", msg);
 
-                // Flip the LCD mock to "now playing" (the transcode is already in the cache).
+                // Flip the LCD mock to the new entry (the transcode is already in the cache).
                 SelectedVideoPath = null;
-                ActiveVideoLocalPath = null;   // force a source change even for a same-named file
-                LoadActiveVideoPreview();
+                SelectedPlaylistItem = deviceName;
             }
-            else if (!ok)
+            else
             {
-                _log.Error("Panel video failed: {Msg}", msg);
+                VideoStatus = msg;
+                _log.Error("Adding the panel video failed: {Msg}", msg);
             }
         }
         catch (Exception ex)
@@ -756,18 +852,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private string[] EffectiveMetricSlots()
         => _settings.MetricsEnabled ? _settings.MetricSlots : new[] { "", "", "", "", "", "" };
 
-    /// <summary>Re-send the screen config (video + widget slots) in the background.</summary>
-    private void PushScreenConfig()
-    {
-        string? video = _settings.PanelVideoFile;
-        if (string.IsNullOrWhiteSpace(video)) return;
-        string[] slots = EffectiveMetricSlots();
-        Task.Run(() =>
-        {
-            try { _backlight.SetPanelVideo(video, slots); }
-            catch (Exception ex) { _log.Warning(ex, "Pushing the screen config failed."); }
-        });
-    }
+    /// <summary>Re-send the screen config (playlist + widget slots) in the background.</summary>
+    private void PushScreenConfig() => ApplyPlaylist();
 
     private void UpdateMetricsStreaming()
     {
@@ -868,12 +954,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                     _lastReassertUtc = DateTime.UtcNow;
                 }
 
-                string? video = _settings.PanelVideoFile;
-                if (!string.IsNullOrWhiteSpace(video))
+                var files = _settings.PanelVideoFiles;
+                if (files.Count > 0)
                 {
-                    _log.Information("Session opened — re-asserting panel video {File}, metric slots and {Percent}% brightness.",
-                        video, BrightnessPercent);
-                    _backlight.SetPanelVideo(video, EffectiveMetricSlots());
+                    _log.Information("Session opened — re-asserting the playlist ({Count} video(s)), " +
+                                     "metric slots and {Percent}% brightness.", files.Count, BrightnessPercent);
+                    _backlight.SetPanelPlaylist(files, _settings.PanelPlayMode, EffectiveMetricSlots());
                 }
                 _backlight.SetPercent(BrightnessPercent, quiet: true);
             }

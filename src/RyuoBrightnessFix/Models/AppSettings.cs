@@ -30,13 +30,20 @@ public sealed class AppSettings
     public bool KeepBrightnessAlive { get; set; } = true;
 
     // --- Panel video ---
+    /// <summary>Legacy single-video field (pre-playlist). Migrated into
+    /// <see cref="PanelVideoFiles"/> on load; kept so old settings files still parse.</summary>
+    public string? PanelVideoFile { get; set; }
+
     /// <summary>
-    /// The device-side file name of the active panel video (in /sdcard/pcMedia, or a stock
-    /// preset name from /sdcard/pcMediaPreset). Re-asserted whenever the HID session reopens,
-    /// because the panel forgets its screen config when it reboots and would otherwise sit on
-    /// a black screen. Defaults to ASUS's stock hardware-info video.
+    /// The playlist of device-side video file names the panel loops (in /sdcard/pcMedia, or
+    /// stock preset names from /sdcard/pcMediaPreset). Re-asserted whenever the HID session
+    /// reopens, because the panel forgets its screen config when it reboots and would
+    /// otherwise sit on a black screen. Defaults to ASUS's stock hardware-info video.
     /// </summary>
-    public string? PanelVideoFile { get; set; } = "RYUO_IV_HW_Info_01.mp4";
+    public List<string> PanelVideoFiles { get; set; } = new() { "RYUO_IV_HW_Info_01.mp4" };
+
+    /// <summary>Playlist order: "Single" plays the list in order; "Random" shuffles.</summary>
+    public string PanelPlayMode { get; set; } = "Single";
 
     /// <summary>How to fit a source video into the panel frame when setting a new video.
     /// Fill = crop to cover the screen (default), Fit = letterbox, Stretch = distort.</summary>
@@ -90,7 +97,21 @@ public sealed class AppSettings
             {
                 var json = File.ReadAllText(path);
                 var loaded = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions);
-                if (loaded is not null) return loaded;
+                if (loaded is not null)
+                {
+                    // Migrate the pre-playlist single-video field.
+                    if (!string.IsNullOrWhiteSpace(loaded.PanelVideoFile) &&
+                        (loaded.PanelVideoFiles is null || loaded.PanelVideoFiles.Count == 0 ||
+                         (loaded.PanelVideoFiles.Count == 1 &&
+                          loaded.PanelVideoFiles[0] == "RYUO_IV_HW_Info_01.mp4" &&
+                          loaded.PanelVideoFile != "RYUO_IV_HW_Info_01.mp4")))
+                    {
+                        loaded.PanelVideoFiles = new List<string> { loaded.PanelVideoFile };
+                    }
+                    loaded.PanelVideoFiles ??= new List<string>();
+                    loaded.PanelVideoFile = null;
+                    return loaded;
+                }
             }
         }
         catch

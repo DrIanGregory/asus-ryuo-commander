@@ -106,21 +106,21 @@ public sealed class MediaService
     public bool AdbAvailable => FindAdb() is not null;
 
     /// <summary>
-    /// Transcode <paramref name="sourceVideoPath"/>, upload it, and set it as the panel video.
-    /// <paramref name="progress"/> receives short status lines. Runs on a background thread.
-    /// On success, <c>DeviceFileName</c> is the on-device name — persist it so the video can
-    /// be re-asserted when the panel forgets its screen config (it does, on every reboot).
+    /// Transcode <paramref name="sourceVideoPath"/> and upload it to the panel, ready to be
+    /// activated as part of the playlist. <paramref name="progress"/> receives short status
+    /// lines. Runs on a background thread. On success, <c>DeviceFileName</c> is the on-device
+    /// name to add to the playlist (persist it — the panel forgets its screen config on
+    /// every reboot and the playlist is re-asserted from settings).
     /// </summary>
-    public async Task<(bool Ok, string Message, string? DeviceFileName)> SetPanelVideoAsync(
+    public async Task<(bool Ok, string Message, string? DeviceFileName)> PrepareVideoAsync(
         string sourceVideoPath, VideoScaleMode scaleMode = VideoScaleMode.Fill,
-        string?[]? sysinfoDisplay = null, IProgress<string>? progress = null, CancellationToken ct = default)
+        IProgress<string>? progress = null, CancellationToken ct = default)
     {
-        return await Task.Run(() => SetPanelVideo(sourceVideoPath, scaleMode, sysinfoDisplay, progress, ct), ct);
+        return await Task.Run(() => PrepareVideo(sourceVideoPath, scaleMode, progress, ct), ct);
     }
 
-    private (bool Ok, string Message, string? DeviceFileName) SetPanelVideo(
-        string sourceVideoPath, VideoScaleMode scaleMode, string?[]? sysinfoDisplay,
-        IProgress<string>? progress, CancellationToken ct)
+    private (bool Ok, string Message, string? DeviceFileName) PrepareVideo(
+        string sourceVideoPath, VideoScaleMode scaleMode, IProgress<string>? progress, CancellationToken ct)
     {
         try
         {
@@ -156,9 +156,6 @@ public sealed class MediaService
                 // 3) Activate over HID ----------------------------------------------
                 progress?.Report("Activating…");
                 ct.ThrowIfCancellationRequested();
-                var (aOk, aMsg) = _backlight.SetPanelVideo(deviceName, sysinfoDisplay);
-                if (!aOk) return (false, aMsg, null);
-
                 // Keep the transcode as the local cache copy so the Video tab can show what
                 // the LCD is playing without pulling it back from the device.
                 try
@@ -172,8 +169,8 @@ public sealed class MediaService
                     _log.Warning(ex, "Caching the transcoded video failed (preview will pull it back over adb).");
                 }
 
-                progress?.Report("Done — the panel is now playing your video.");
-                return (true, $"Panel video set ({deviceName}).", deviceName);
+                progress?.Report("Uploaded.");
+                return (true, $"Video uploaded to the panel ({deviceName}).", deviceName);
             }
             finally
             {

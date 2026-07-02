@@ -24,12 +24,15 @@ widgets (CPU/GPU temperature, CPU usage, AIO pump RPM, motherboard temperature, 
   seconds after the PC stops talking to it (that's the infamous "dims after sleep even though
   Armoury Crate says 100%"). The app keeps a live HID session with a read‑drain and re‑applies
   your level every 3 s.
-- **Plays your video on the panel.** Pick any video file; it's transcoded to the panel's
-  playable format, uploaded, and looped full‑screen — the same path Info Hub uses. Choose the
-  **scale mode**: *Fill* (crop to cover the screen, default), *Fit* (letterbox), or *Stretch* —
-  The Video tab embeds an **LCD‑shaped screen** that always shows **what the panel is playing
-  right now**, and switches to a live preview of the file you're choosing — with the selected
-  scale mode applied — so you see exactly how the cooler will render it before uploading.
+- **Plays your videos on the panel — a whole playlist of them.** Queue as many videos as you
+  like: each is transcoded to the panel's playable format, uploaded, and the panel itself
+  rotates through them full‑screen (one video loops; multiple rotate shuffled — the
+  firmware's only multi‑video mode). Reorder or remove entries any time. Choose the
+  **scale mode** per upload: *Fill* (crop to cover the screen, default), *Fit* (letterbox),
+  or *Stretch*. The Video tab embeds an **LCD‑shaped screen** that always shows **what the
+  panel is playing right now** (or the highlighted playlist entry), and switches to a live
+  preview of the file you're choosing — with the selected scale mode applied — so you see
+  exactly how the cooler will render it before uploading.
 - **Shows live system metrics on the panel.** Up to six widgets over the video (CPU/GPU
   temperature, loads, clocks, fan/pump RPM, motherboard temperature, clock) — the same
   telemetry Info Hub streams, reverse‑engineered (`STATE all` snapshots every 3 s) and fed
@@ -114,10 +117,13 @@ ContentLength=<len(body)>\r\n
   `WindowManager.LayoutParams.screenBrightness` (a per‑window override) — which is why
   sysfs / global settings are irrelevant.
 - `cmdType=waterBlockScreenId`, body
-  `{"id":"Customization","screenMode":"Full Screen","playMode":"Single","media":["<file>"],
+  `{"id":"Customization","screenMode":"Full Screen","playMode":"<mode>","media":["<f1>","<f2>",…],
   "sysinfoDisplay":["<slot1>",…,"<slot6>"],…}`
-  makes the home‑UI loop `/sdcard/pcMedia/<file>` full‑screen (stock preset names from
-  `/sdcard/pcMediaPreset` also resolve) and configures the six metric widget slots. Valid slot
+  makes the home‑UI play the `media` playlist full‑screen (files in `/sdcard/pcMedia`; stock
+  preset names from `/sdcard/pcMediaPreset` also resolve) and configures the six metric
+  widget slots. `playMode` (verified live): **`Single` loops the *first* entry only — it
+  never advances**; **`Random` rotates through the whole list shuffled**. Those are the only
+  two modes in the firmware, so multi‑video playlists are always shuffled. Valid slot
   tokens (extracted from the HomeUI apk): `CPU Temperature/Usage/Load/Speed Average/Voltage`,
   `GPU Temperature/Usage/Load/Speed/Frequency/Power/Voltage`, `Memory Frequency`,
   `Motherboard Temperature`, `Date&Time`, `Fan Speed <fan name>`. Empty string hides a slot.
@@ -173,9 +179,11 @@ ASUS's stock videos. Wider than 1920 is rejected by the hardware decoder (black 
    stream, and re‑applies your level so the panel doesn't dim itself.
    **"Restore this brightness after waking"** re‑applies promptly on resume.
 3. **Video** tab: **Choose video…**, pick a **Scale mode** (*Fill* crops to cover the whole
-   screen — no bars; *Fit* letterboxes; *Stretch* distorts) and check the **LCD preview**
-   (the panel's exact shape, with your scale mode applied live), then **Set as panel video**.
-   The video is remembered and re‑asserted automatically whenever the panel reconnects.
+   screen — no bars; *Fit* letterboxes; *Stretch* distorts), check the **LCD preview**
+   (the panel's exact shape, with your scale mode applied live), then **Add to panel
+   playlist**. Add as many as you like — one video loops, several rotate (shuffled by the
+   firmware); reorder or remove entries with the playlist controls. The playlist is
+   remembered and re‑asserted automatically whenever the panel reconnects.
    Tip: at 100% brightness a dark video still looks dim — that's the footage, not the
    backlight.
 4. **Metrics** tab: tick **Show live system metrics on the LCD** and pick up to six widgets

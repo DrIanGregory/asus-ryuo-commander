@@ -12,7 +12,7 @@
     <AssemblyName>RyuoBrightnessFix</AssemblyName>
     <RootNamespace>RyuoBrightnessFix</RootNamespace>
     <!-- Shown in the status bar (click-to-copy); bump on every user-visible change. -->
-    <Version>1.5.0</Version>
+    <Version>1.6.0</Version>
     <!-- NOTE: InvariantGlobalization must stay OFF — WPF data binding needs a real
          culture (en-US) or it throws "Cannot find non-neutral culture" at render. -->
     <!-- The cyan-dragon emblem ("Ryuo" = dragon king) is the single app icon,

@@ -156,16 +156,31 @@ public sealed class BacklightService : IDisposable
     /// from the <c>STATE all</c> telemetry stream (<see cref="SendSysinfo"/>).
     /// </summary>
     public (bool Ok, string Message) SetPanelVideo(string deviceFileName, string?[]? sysinfoDisplay = null)
+        => SetPanelPlaylist(new[] { deviceFileName }, "Single", sysinfoDisplay);
+
+    /// <summary>
+    /// Make the panel loop a playlist of videos (each already present in /sdcard/pcMedia or
+    /// the stock preset dir). <paramref name="playMode"/>: "Single" loops the FIRST video
+    /// only (verified live — it never advances); "Random" rotates through the list shuffled.
+    /// Those are the only two modes the firmware knows, so multi-video = Random.
+    /// </summary>
+    public (bool Ok, string Message) SetPanelPlaylist(
+        IReadOnlyList<string> deviceFileNames, string playMode = "Single", string?[]? sysinfoDisplay = null)
     {
+        if (deviceFileNames.Count == 0)
+            return (false, "Playlist is empty — nothing to activate.");
+
         var slots = new string?[6];
         if (sysinfoDisplay is not null)
             for (int i = 0; i < Math.Min(6, sysinfoDisplay.Length); i++) slots[i] = sysinfoDisplay[i];
         string slotsJson = string.Join(",", slots.Select(s => JsonString(s ?? "")));
+        string mediaJson = string.Join(",", deviceFileNames.Select(JsonString));
+        if (playMode is not ("Single" or "Random")) playMode = "Single";
 
         // Matches the captured Info Hub message exactly (id "Customization" + CamelCase playMode).
         string body =
-            "{\"id\":\"Customization\",\"screenMode\":\"Full Screen\",\"playMode\":\"Single\"," +
-            "\"media\":[" + JsonString(deviceFileName) + "]," +
+            "{\"id\":\"Customization\",\"screenMode\":\"Full Screen\",\"playMode\":\"" + playMode + "\"," +
+            "\"media\":[" + mediaJson + "]," +
             "\"settings\":{\"titleColor\":\"#25cfe5\",\"contentColor\":\"#25cfe5\"," +
             "\"filter\":{\"value\":null,\"opacity\":100},\"badges\":[]}," +
             "\"sysinfoDisplay\":[" + slotsJson + "]}";
@@ -180,12 +195,15 @@ public sealed class BacklightService : IDisposable
             if (!last.Ok) break;
             if (i < 3) Thread.Sleep(600);
         }
+        string described = deviceFileNames.Count == 1
+            ? deviceFileNames[0]
+            : $"{deviceFileNames.Count} videos ({playMode})";
         if (last.Ok)
         {
-            _log.Information("Panel video set to {File}.", deviceFileName);
-            return (true, $"Panel video set to {deviceFileName}.");
+            _log.Information("Panel playlist set: {What}.", described);
+            return (true, $"Panel playlist set: {described}.");
         }
-        _log.Error("Panel video set failed ({File}): {Msg}", deviceFileName, last.Message);
+        _log.Error("Panel playlist set failed ({What}): {Msg}", described, last.Message);
         return last;
     }
 
