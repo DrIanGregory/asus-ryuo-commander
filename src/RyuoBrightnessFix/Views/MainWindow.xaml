@@ -101,10 +101,10 @@
                                 <ComboBox ItemsSource="{Binding VideoScaleModes}"
                                           SelectedItem="{Binding SelectedVideoScaleMode, Mode=TwoWay}"
                                           Width="130" Margin="10,0,0,0" VerticalAlignment="Center" />
-                                <TextBlock Text="Fill = crop to cover the screen · Fit = bars · Stretch = distort"
-                                           VerticalAlignment="Center" Margin="12,0,0,0"
-                                           Style="{StaticResource SubtleText}" />
                             </StackPanel>
+                            <TextBlock Text="{Binding VideoScaleModeDescription}"
+                                       Style="{StaticResource SubtleText}" TextWrapping="Wrap"
+                                       Margin="0,6,0,0" />
                             <Button Content="Set as panel video" Style="{StaticResource AccentButton}"
                                     Command="{Binding SetVideoCommand}" Width="180" HorizontalAlignment="Left"
                                     Margin="0,12,0,0" />

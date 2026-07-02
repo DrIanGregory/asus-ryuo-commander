@@ -451,8 +451,19 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _settings.VideoScaleMode = value;
             SaveSettings();
             OnPropertyChanged();
+            OnPropertyChanged(nameof(VideoScaleModeDescription));
         }
     }
+
+    /// <summary>One-line explanation of the selected scale mode, shown under the ComboBox.</summary>
+    public string VideoScaleModeDescription => SelectedVideoScaleMode switch
+    {
+        VideoScaleMode.Fill => "Fill: scales the video up until it covers the whole screen, " +
+                               "cropping whatever overflows. No bars, no distortion.",
+        VideoScaleMode.Stretch => "Stretch: forces the video to the screen's shape. " +
+                                  "No bars, but the image is distorted.",
+        _ => "Fit: shows the whole video, with black bars where its shape differs from the screen.",
+    };
 
     public string ActiveVideoDisplay =>
         string.IsNullOrEmpty(_settings.PanelVideoFile)
