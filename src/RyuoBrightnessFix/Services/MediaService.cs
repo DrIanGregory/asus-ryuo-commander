@@ -24,6 +24,8 @@ namespace RyuoBrightnessFix.Services;
 public sealed class MediaService
 {
     private const string DeviceMediaDir = "/sdcard/pcMedia";
+    private const string DevicePresetDir = "/sdcard/pcMediaPreset";
+    private const int CacheKeepCount = 5;
 
     private readonly ILogger _log;
     private readonly BacklightService _backlight;
@@ -32,6 +34,72 @@ public sealed class MediaService
     {
         _log = log.ForContext<MediaService>();
         _backlight = backlight;
+    }
+
+    /// <summary>%APPDATA%\RyuoBrightnessFix\videocache — local copies of on-device videos, so the
+    /// Video tab can always show what the LCD is playing.</summary>
+    public static string CacheDir => Path.Combine(AppConstants.AppDataDir, "videocache");
+
+    /// <summary>
+    /// A local playable copy of an on-device video: the cached transcode if we set it, else
+    /// pulled back over adb (pcMedia first, then the stock preset dir). Null when the file
+    /// can't be obtained (no adb / file gone). Runs on a background thread; safe to call
+    /// repeatedly — cache hits return instantly.
+    /// </summary>
+    public async Task<string?> GetLocalCopyAsync(string deviceFileName, CancellationToken ct = default)
+    {
+        return await Task.Run(() =>
+        {
+            try
+            {
+                Directory.CreateDirectory(CacheDir);
+                string local = Path.Combine(CacheDir, deviceFileName);
+                if (File.Exists(local) && new FileInfo(local).Length > 0) return local;
+
+                var adb = FindAdb();
+                if (adb is null)
+                {
+                    _log.Debug("No adb — cannot pull {File} for the preview.", deviceFileName);
+                    return null;
+                }
+                var workDir = AdbWorkingDir(adb);
+                foreach (var remoteDir in new[] { DeviceMediaDir, DevicePresetDir })
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var (exit, _, _) = Run(adb, new[] { "pull", remoteDir + "/" + deviceFileName, local },
+                        workDir, TimeSpan.FromMinutes(2), ct);
+                    if (exit == 0 && File.Exists(local) && new FileInfo(local).Length > 0)
+                    {
+                        _log.Information("Pulled {File} from the panel for the preview.", deviceFileName);
+                        return local;
+                    }
+                }
+                try { if (File.Exists(local)) File.Delete(local); } catch { }
+                _log.Warning("Could not pull {File} from the panel (not found on device?).", deviceFileName);
+                return null;
+            }
+            catch (OperationCanceledException) { return null; }
+            catch (Exception ex)
+            {
+                _log.Warning(ex, "Getting a local copy of {File} failed.", deviceFileName);
+                return null;
+            }
+        }, ct);
+    }
+
+    /// <summary>Keep the newest few cached videos; old panel videos are dead weight.</summary>
+    private void PruneCache()
+    {
+        try
+        {
+            var files = new DirectoryInfo(CacheDir).GetFiles()
+                .OrderByDescending(f => f.LastWriteTimeUtc).Skip(CacheKeepCount);
+            foreach (var f in files)
+            {
+                try { f.Delete(); } catch { /* in use by the preview — skip */ }
+            }
+        }
+        catch { /* cache dir missing — nothing to prune */ }
     }
 
     public bool FfmpegAvailable => FindFfmpeg() is not null;
@@ -91,12 +159,25 @@ public sealed class MediaService
                 var (aOk, aMsg) = _backlight.SetPanelVideo(deviceName, sysinfoDisplay);
                 if (!aOk) return (false, aMsg, null);
 
+                // Keep the transcode as the local cache copy so the Video tab can show what
+                // the LCD is playing without pulling it back from the device.
+                try
+                {
+                    Directory.CreateDirectory(CacheDir);
+                    File.Move(tempOut, Path.Combine(CacheDir, deviceName), overwrite: true);
+                    PruneCache();
+                }
+                catch (Exception ex)
+                {
+                    _log.Warning(ex, "Caching the transcoded video failed (preview will pull it back over adb).");
+                }
+
                 progress?.Report("Done — the panel is now playing your video.");
                 return (true, $"Panel video set ({deviceName}).", deviceName);
             }
             finally
             {
-                try { if (File.Exists(tempOut)) File.Delete(tempOut); } catch { /* temp cleanup */ }
+                try { if (File.Exists(tempOut)) File.Delete(tempOut); } catch { /* already moved to the cache */ }
             }
         }
         catch (OperationCanceledException)

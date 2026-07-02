@@ -7,6 +7,11 @@ A small Windows (.NET 8 / WPF) tray app that speaks the panel's **native USB‑H
 directly, keeps the screen alive, plays your video, and **heals every failure mode the panel
 firmware throws at it** — automatically.
 
+**Example: a custom video looping on the Ryuo IV at 100% brightness, with live metric
+widgets (CPU/GPU temperature, CPU usage, AIO pump RPM, motherboard temperature, clock):**
+
+![Custom video with live metrics on the Ryuo IV LCD](docs/panel-example.png)
+
 | Brightness | Video | Settings |
 |:---:|:---:|:---:|
 | ![Brightness tab](docs/brightness-tab.png) | ![Video tab](docs/video-tab.png) | ![Settings tab](docs/settings-tab.png) |
@@ -22,12 +27,16 @@ firmware throws at it** — automatically.
 - **Plays your video on the panel.** Pick any video file; it's transcoded to the panel's
   playable format, uploaded, and looped full‑screen — the same path Info Hub uses. Choose the
   **scale mode**: *Fill* (crop to cover the screen, default), *Fit* (letterbox), or *Stretch* —
-  with a **live LCD‑shaped preview** in the app showing exactly how the panel will render it.
+  The Video tab embeds an **LCD‑shaped screen** that always shows **what the panel is playing
+  right now**, and switches to a live preview of the file you're choosing — with the selected
+  scale mode applied — so you see exactly how the cooler will render it before uploading.
 - **Shows live system metrics on the panel.** Up to six widgets over the video (CPU/GPU
   temperature, loads, clocks, fan/pump RPM, motherboard temperature, clock) — the same
   telemetry Info Hub streams, reverse‑engineered (`STATE all` snapshots every 3 s) and fed
   from LibreHardwareMonitor. Full sensor set (CPU temp, fan RPM) needs the app run as
-  administrator; loads/GPU/memory/disk/network work without.
+  administrator; loads/GPU/memory/disk/network work without. With **Start with Windows**
+  ticked, run the app as administrator **once** and it registers an elevated Task Scheduler
+  logon task — from then on it auto‑starts as administrator on every boot, no UAC prompt.
 - **Survives everything.** Panel reboots, USB re‑enumeration, PC sleep, firmware wedges — the
   app detects each one and restores both brightness *and* your video with no interaction:
   - HID sessions **self‑heal** (failed writes reopen the session and retry);
@@ -191,7 +200,7 @@ version (click to copy).
 | `SystemMetricsService` | Collects live sensors via LibreHardwareMonitor and renders the `STATE all` JSON snapshot the panel's widgets consume. |
 | `MainViewModel` | Slider/Apply, the 3‑second keep‑alive, wedge detection, hot‑plug refresh, **panel‑state re‑assert** (video + brightness on every session open), Video tab, and settings. |
 | `ResumeMonitor` | On resume from sleep, re‑applies the target promptly (the wedge detector handles the firmware's post‑sleep state a few seconds later). |
-| `StartupRegistrationService` | "Start with Windows" via the per‑user `HKCU\…\Run` key; self‑heals a stale exe path on every start. |
+| `StartupRegistrationService` | "Start with Windows" via the per‑user `HKCU\…\Run` key — or, once the app has run elevated, via a **Task Scheduler logon task with highest privileges** (auto‑starts as administrator, no UAC prompt). Self‑heals stale exe paths on every start. |
 | `TrayIconService` | System‑tray icon + menu (open / restore brightness / exit). |
 | Diagnostics | Toggle **verbose debug logging** in Settings; logs to `%APPDATA%\RyuoBrightnessFix\logs\`, with an "Open logs folder" button. |
 

@@ -94,6 +94,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         InitializeMetrics();
         RefreshDevice();
+        LoadActiveVideoPreview();
+        RefreshStartupModeNote();
     }
 
     // ---------------------------------------------------------------- tabs & status
@@ -157,7 +159,39 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _startup.Set(value);
             _settings.StartWithWindows = value;
             SaveSettings();
+            RefreshStartupModeNote();
         }
+    }
+
+    private bool _startupElevatedTask;
+    public string StartupModeNote
+    {
+        get
+        {
+            if (!_startWithWindows) return "";
+            if (_startupElevatedTask)
+                return "Autostart mode: as administrator (Task Scheduler, no UAC prompt) — " +
+                       "full sensor access at every logon.";
+            return "Autostart mode: standard (no admin). Run the app as administrator once " +
+                   "with this ticked and it will auto-start as administrator from then on.";
+        }
+    }
+
+    public bool ShowStartupModeNote => _startWithWindows;
+
+    private void RefreshStartupModeNote()
+    {
+        // schtasks query takes ~100 ms — keep it off the UI thread.
+        Task.Run(() =>
+        {
+            bool elevated = _startup.IsRegisteredElevated();
+            Application.Current?.Dispatcher.BeginInvoke(() =>
+            {
+                _startupElevatedTask = elevated;
+                OnPropertyChanged(nameof(StartupModeNote));
+                OnPropertyChanged(nameof(ShowStartupModeNote));
+            });
+        });
     }
 
     private bool _startMinimized;
@@ -416,11 +450,74 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(SelectedVideoName));
                 OnPropertyChanged(nameof(HasSelectedVideo));
                 SetVideoCommand.RaiseCanExecuteChanged();
+                RaisePreviewChanged();
             }
         }
     }
 
     public bool HasSelectedVideo => !string.IsNullOrEmpty(_selectedVideoPath);
+
+    // ------------------------------------------------ the LCD screen preview
+
+    private string? _activeVideoLocalPath;
+    /// <summary>Local playable copy of the video the panel is looping right now.</summary>
+    public string? ActiveVideoLocalPath
+    {
+        get => _activeVideoLocalPath;
+        private set { if (SetProperty(ref _activeVideoLocalPath, value)) RaisePreviewChanged(); }
+    }
+
+    /// <summary>What the LCD mock shows: the file being chosen, else the active panel video.</summary>
+    public string? PreviewSource => SelectedVideoPath ?? ActiveVideoLocalPath;
+
+    public bool HasPreview => PreviewSource is not null;
+
+    public string PreviewTitle => SelectedVideoPath is not null
+        ? $"LCD preview of the selected video — {SelectedVideoScaleMode} scale mode"
+        : "Now playing on the LCD";
+
+    /// <summary>
+    /// How the preview stretches into the LCD frame. A file being chosen simulates the scale
+    /// mode that the transcode will bake in. The active video already has its mode baked into
+    /// its 1920×960 pixels, and the panel stretches that frame to cover the screen (cropping
+    /// ~3% of height) — UniformToFill reproduces exactly that.
+    /// </summary>
+    public System.Windows.Media.Stretch PreviewStretch => SelectedVideoPath is null
+        ? System.Windows.Media.Stretch.UniformToFill
+        : SelectedVideoScaleMode switch
+        {
+            VideoScaleMode.Fill => System.Windows.Media.Stretch.UniformToFill,
+            VideoScaleMode.Stretch => System.Windows.Media.Stretch.Fill,
+            _ => System.Windows.Media.Stretch.Uniform,
+        };
+
+    private void RaisePreviewChanged()
+    {
+        OnPropertyChanged(nameof(PreviewSource));
+        OnPropertyChanged(nameof(HasPreview));
+        OnPropertyChanged(nameof(PreviewTitle));
+        OnPropertyChanged(nameof(PreviewStretch));
+    }
+
+    /// <summary>Fetch a local copy of the active panel video for the LCD mock (cache or adb pull).</summary>
+    private void LoadActiveVideoPreview()
+    {
+        string? file = _settings.PanelVideoFile;
+        if (string.IsNullOrWhiteSpace(file)) return;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                string? local = await _media.GetLocalCopyAsync(file);
+                if (local is null) return;
+                Application.Current?.Dispatcher.BeginInvoke(() => ActiveVideoLocalPath = local);
+            }
+            catch (Exception ex)
+            {
+                _log.Debug(ex, "Loading the active-video preview failed.");
+            }
+        });
+    }
 
     public string SelectedVideoName =>
         string.IsNullOrEmpty(_selectedVideoPath) ? "No video chosen" : Path.GetFileName(_selectedVideoPath);
@@ -527,6 +624,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 SaveSettings();
                 OnPropertyChanged(nameof(ActiveVideoDisplay));
                 _log.Information("Panel video set: {Msg}", msg);
+
+                // Flip the LCD mock to "now playing" (the transcode is already in the cache).
+                SelectedVideoPath = null;
+                ActiveVideoLocalPath = null;   // force a source change even for a same-named file
+                LoadActiveVideoPreview();
             }
             else if (!ok)
             {
