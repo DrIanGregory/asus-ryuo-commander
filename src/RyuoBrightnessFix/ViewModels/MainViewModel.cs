@@ -32,6 +32,17 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private static readonly TimeSpan KeepAliveInterval = TimeSpan.FromSeconds(3);
     private System.Threading.Timer? _keepAliveTimer;
     private int _keepAliveBusy;   // 0/1 guard so ticks never overlap on the device
+    private int _keepAliveFailures;   // consecutive failed ticks, for throttled warnings
+
+    // Wedge detection: a healthy panel streams input reports (~10/s). Writes that succeed
+    // while the panel stays silent this long mean its firmware dropped its HID handle
+    // (it does this whenever the host stops reading — app restart, PC sleep) and is
+    // discarding everything; only a SerialService restart recovers it.
+    private static readonly TimeSpan WedgeSilenceThreshold = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan RecoveryRetryInterval = TimeSpan.FromMinutes(5);
+    private readonly PanelRecoveryService _recovery;
+    private readonly MediaService _media;
+    private DateTime _lastRecoveryAttemptUtc = DateTime.MinValue;
 
     /// <summary>Raised when the tray icon visibility should change (App owns the tray).</summary>
     public event Action<bool>? TrayVisibilityRequested;
@@ -40,6 +51,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public RelayCommand Restore100Command { get; }
     public RelayCommand ReloadCommand { get; }
     public RelayCommand OpenLogsFolderCommand { get; }
+    public RelayCommand CopyVersionCommand { get; }
+    public RelayCommand ChooseVideoCommand { get; }
+    public RelayCommand SetVideoCommand { get; }
 
     public MainViewModel(ILogger log, UiLogSink uiSink, AppSettings settings, StartupRegistrationService startup,
         LoggingLevelSwitch levelSwitch)
@@ -49,6 +63,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _startup = startup;
         _levelSwitch = levelSwitch;
         _backlight = new BacklightService(log);
+        _recovery = new PanelRecoveryService(log);
+        _media = new MediaService(log, _backlight);
 
         // Mirror persisted settings into bindable fields.
         _brightnessPercent = settings.TargetBrightnessPercent;
@@ -64,8 +80,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         Restore100Command = new RelayCommand(() => ApplyBrightness(100), () => CanControlDevice);
         ReloadCommand = new RelayCommand(RefreshDevice);
         OpenLogsFolderCommand = new RelayCommand(OpenLogsFolder);
+        CopyVersionCommand = new RelayCommand(CopyVersionToClipboard);
+        ChooseVideoCommand = new RelayCommand(ChooseVideo, () => !VideoBusy);
+        SetVideoCommand = new RelayCommand(SetVideo, () => CanSetVideo);
 
         uiSink.LineWritten += OnLogLine;
+        _backlight.DeviceListChanged += OnDeviceListChanged;
+        _backlight.SessionOpened += OnSessionOpened;
 
         _log.Debug("Settings on load: KeepBrightnessAlive={Keep}, AutoFixOnResume={Resume}, " +
                    "Target={Target}%, DebugLogging={Debug}.",
@@ -219,6 +240,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             {
                 ApplyBrightnessCommand.RaiseCanExecuteChanged();
                 Restore100Command.RaiseCanExecuteChanged();
+                SetVideoCommand.RaiseCanExecuteChanged();
+                OnPropertyChanged(nameof(CanSetVideo));
             }
         }
     }
@@ -231,6 +254,64 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private string _logText = "";
     public string LogText { get => _logText; private set => SetProperty(ref _logText, value); }
+
+    // ---------------------------------------------------------------- version / status bar
+
+    public string AppVersion => AppConstants.Version;
+
+    private bool _versionFeedbackVisible;
+    public bool VersionFeedbackVisible
+    {
+        get => _versionFeedbackVisible;
+        private set => SetProperty(ref _versionFeedbackVisible, value);
+    }
+
+    private string _versionFeedbackText = "Copied";
+    public string VersionFeedbackText
+    {
+        get => _versionFeedbackText;
+        private set => SetProperty(ref _versionFeedbackText, value);
+    }
+
+    private System.Windows.Threading.DispatcherTimer? _versionFeedbackTimer;
+
+    /// <summary>Copy the version to the clipboard and flash a short "Copied" confirmation.</summary>
+    private void CopyVersionToClipboard()
+    {
+        try
+        {
+            // SetDataObject(copy: true) survives app exit and is less prone to the
+            // transient CLIPBRD_E_CANT_OPEN failures of Clipboard.SetText.
+            System.Windows.Clipboard.SetDataObject(AppVersion, true);
+            VersionFeedbackText = "Copied";
+        }
+        catch (Exception ex)
+        {
+            // Another process can hold the clipboard open; tell the user instead of lying.
+            _log.Warning(ex, "Could not copy the version to the clipboard.");
+            VersionFeedbackText = "Copy failed";
+        }
+        ShowVersionFeedback();
+    }
+
+    private void ShowVersionFeedback()
+    {
+        if (_versionFeedbackTimer is null)
+        {
+            _versionFeedbackTimer = new System.Windows.Threading.DispatcherTimer
+            {
+                Interval = TimeSpan.FromSeconds(1.5),
+            };
+            _versionFeedbackTimer.Tick += (_, _) =>
+            {
+                _versionFeedbackTimer!.Stop();
+                VersionFeedbackVisible = false;
+            };
+        }
+        VersionFeedbackVisible = true;
+        _versionFeedbackTimer.Stop();   // restart the window on rapid re-clicks
+        _versionFeedbackTimer.Start();
+    }
 
     // ---------------------------------------------------------------- operations
 
@@ -321,6 +402,203 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    // ---------------------------------------------------------------- panel video
+
+    private string? _selectedVideoPath;
+    public string? SelectedVideoPath
+    {
+        get => _selectedVideoPath;
+        private set
+        {
+            if (SetProperty(ref _selectedVideoPath, value))
+            {
+                OnPropertyChanged(nameof(SelectedVideoName));
+                SetVideoCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public string SelectedVideoName =>
+        string.IsNullOrEmpty(_selectedVideoPath) ? "No video chosen" : Path.GetFileName(_selectedVideoPath);
+
+    private bool _videoBusy;
+    public bool VideoBusy
+    {
+        get => _videoBusy;
+        private set
+        {
+            if (SetProperty(ref _videoBusy, value))
+            {
+                ChooseVideoCommand.RaiseCanExecuteChanged();
+                SetVideoCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    private string _videoStatus = "";
+    public string VideoStatus { get => _videoStatus; private set => SetProperty(ref _videoStatus, value); }
+
+    public string ActiveVideoDisplay =>
+        string.IsNullOrEmpty(_settings.PanelVideoFile)
+            ? "No panel video configured."
+            : $"Active panel video: {_settings.PanelVideoFile} (re-asserted automatically)";
+
+    public bool CanSetVideo =>
+        CanControlDevice && !VideoBusy && !string.IsNullOrEmpty(SelectedVideoPath);
+
+    private void ChooseVideo()
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Choose a video for the Ryuo IV panel",
+            Filter = "Video files|*.mp4;*.mov;*.mkv;*.avi;*.webm;*.m4v;*.wmv|All files|*.*",
+            CheckFileExists = true,
+        };
+        if (dlg.ShowDialog() == true)
+        {
+            SelectedVideoPath = dlg.FileName;
+            VideoStatus = "";
+        }
+    }
+
+    private async void SetVideo()
+    {
+        if (!CanSetVideo) return;
+        var path = SelectedVideoPath!;
+
+        if (!_media.FfmpegAvailable)
+        {
+            VideoStatus = "ffmpeg not found — see tools\\fetch-ffmpeg.ps1 (put ffmpeg.exe next to the app).";
+            _log.Warning("Set video aborted: ffmpeg not found.");
+            return;
+        }
+        if (!_media.AdbAvailable)
+        {
+            VideoStatus = "adb not found — install 'ASUS Info Hub - ROG RYUO IV'.";
+            _log.Warning("Set video aborted: adb not found.");
+            return;
+        }
+
+        VideoBusy = true;
+        VideoStatus = "Starting…";
+        _log.Information("Setting panel video from {Path}", path);
+        try
+        {
+            var progress = new Progress<string>(s => VideoStatus = s);
+            var (ok, msg, deviceName) = await _media.SetPanelVideoAsync(path, progress);
+            VideoStatus = msg;
+            if (ok && deviceName is not null)
+            {
+                // Remember it so it survives panel reboots (the panel forgets its screen
+                // config; OnSessionOpened re-asserts this file every time we reconnect).
+                _settings.PanelVideoFile = deviceName;
+                SaveSettings();
+                OnPropertyChanged(nameof(ActiveVideoDisplay));
+                _log.Information("Panel video set: {Msg}", msg);
+            }
+            else if (!ok)
+            {
+                _log.Error("Panel video failed: {Msg}", msg);
+            }
+        }
+        catch (Exception ex)
+        {
+            VideoStatus = "Error: " + ex.Message;
+            _log.Error(ex, "Unexpected error setting panel video.");
+        }
+        finally
+        {
+            VideoBusy = false;
+        }
+    }
+
+    // ---------------------------------------------------------------- session re-assert
+
+    private readonly object _reassertGate = new();
+    private DateTime _lastReassertUtc = DateTime.MinValue;
+
+    /// <summary>
+    /// A new HID session opened (startup, self-heal, or the panel came back from a reboot or
+    /// firmware recovery). The panel forgets its screen config across reboots — without this
+    /// it sits on a black screen that looks "dead" at any brightness. Re-assert the saved
+    /// video and the target brightness. May be raised under BacklightService's internal lock,
+    /// so all work is queued; throttled because sessions can reopen in bursts.
+    /// </summary>
+    private void OnSessionOpened()
+    {
+        Task.Run(() =>
+        {
+            try
+            {
+                lock (_reassertGate)
+                {
+                    if (DateTime.UtcNow - _lastReassertUtc < TimeSpan.FromSeconds(15)) return;
+                    _lastReassertUtc = DateTime.UtcNow;
+                }
+
+                string? video = _settings.PanelVideoFile;
+                if (!string.IsNullOrWhiteSpace(video))
+                {
+                    _log.Information("Session opened — re-asserting panel video {File} and {Percent}% brightness.",
+                        video, BrightnessPercent);
+                    _backlight.SetPanelVideo(video);
+                }
+                _backlight.SetPercent(BrightnessPercent, quiet: true);
+            }
+            catch (Exception ex)
+            {
+                _log.Warning(ex, "Re-asserting panel state after session open failed.");
+            }
+        });
+    }
+
+    // ---------------------------------------------------------------- device hot-plug
+
+    private System.Windows.Threading.DispatcherTimer? _deviceChangeDebounce;
+
+    /// <summary>
+    /// A HID device appeared or vanished somewhere on the machine. Devices flap while
+    /// Windows re-enumerates a composite device, so debounce, then refresh only if the
+    /// Ryuo's connected-state actually changed. Without this the app would sit dead
+    /// after starting with the panel absent (or after the panel drops) until the user
+    /// manually clicked "Re-check LCD".
+    /// </summary>
+    private void OnDeviceListChanged()
+    {
+        var app = Application.Current;
+        if (app is null) return;
+        app.Dispatcher.BeginInvoke(() =>
+        {
+            if (_deviceChangeDebounce is null)
+            {
+                _deviceChangeDebounce = new System.Windows.Threading.DispatcherTimer
+                {
+                    Interval = TimeSpan.FromMilliseconds(1000),
+                };
+                _deviceChangeDebounce.Tick += (_, _) =>
+                {
+                    _deviceChangeDebounce!.Stop();
+                    try
+                    {
+                        bool present = _backlight.DeviceConnected();
+                        if (present != CanControlDevice)
+                        {
+                            _log.Information("Ryuo IV {State} on USB; re-checking.",
+                                present ? "appeared" : "disappeared");
+                            RefreshDevice();
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.Warning(ex, "Device hot-plug re-check failed.");
+                    }
+                };
+            }
+            _deviceChangeDebounce.Stop();
+            _deviceChangeDebounce.Start();
+        });
+    }
+
     // ---------------------------------------------------------------- resume monitor
 
     private void RestartResumeMonitor()
@@ -379,16 +657,73 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         try
         {
             if (!CanControlDevice || !KeepBrightnessAlive) return;
-            _backlight.SetPercent(BrightnessPercent, quiet: true);
+            var (ok, msg) = _backlight.SetPercent(BrightnessPercent, quiet: true);
+            if (ok)
+            {
+                NoteKeepAliveSuccess();
+                CheckForWedgedPanel();
+            }
+            else
+            {
+                NoteKeepAliveFailure(msg);
+            }
         }
         catch (Exception ex)
         {
-            _log.Debug(ex, "Keep-alive tick failed (will retry next interval).");
+            NoteKeepAliveFailure(ex.Message);
         }
         finally
         {
             Interlocked.Exchange(ref _keepAliveBusy, 0);
         }
+    }
+
+    // The tick fires every 3 s, so a dead panel would otherwise flood the log (or worse,
+    // fail in total silence, as the pre-fix code did). Warn on the first failure and every
+    // 100th after that (~5 min), and log recovery so the gap is visible in the log.
+    private void NoteKeepAliveFailure(string message)
+    {
+        int n = ++_keepAliveFailures;
+        if (n == 1 || n % 100 == 0)
+            _log.Warning("Brightness keep-alive failing ({Count} consecutive tick(s)): {Msg}", n, message);
+    }
+
+    private void NoteKeepAliveSuccess()
+    {
+        int n = _keepAliveFailures;
+        if (n > 0)
+        {
+            _keepAliveFailures = 0;
+            _log.Information("Brightness keep-alive recovered after {Count} failed tick(s); " +
+                             "holding at {Percent}% again.", n, BrightnessPercent);
+        }
+    }
+
+    /// <summary>
+    /// Writes succeeding while the panel sends nothing back = the firmware wedged its HID
+    /// handle and is silently discarding our messages (it does this whenever the host stops
+    /// reading its stream — app restarts, PC sleep). Restart its SerialService over ASUS's
+    /// bundled adb; the gadget then re-enumerates and the session self-heal + hot-plug
+    /// detection bring brightness back automatically. Runs on the keep-alive timer thread;
+    /// the busy-guard keeps ticks from stacking behind the (seconds-long) adb call.
+    /// </summary>
+    private void CheckForWedgedPanel()
+    {
+        TimeSpan? silence = _backlight.TimeSinceLastInputReport;
+        if (silence is null || silence < WedgeSilenceThreshold) return;
+        if (DateTime.UtcNow - _lastRecoveryAttemptUtc < RecoveryRetryInterval) return;
+        _lastRecoveryAttemptUtc = DateTime.UtcNow;
+
+        _log.Warning("Panel looks wedged: brightness writes succeed but the panel has sent " +
+                     "nothing for {Sec:F0}s. Restarting its SerialService over adb…",
+            silence.Value.TotalSeconds);
+        var (ok, msg) = _recovery.TryRestartSerialService();
+        if (ok)
+            _log.Information("Panel recovery started; brightness will re-apply automatically " +
+                             "once the USB device re-enumerates.");
+        else
+            _log.Warning("Panel recovery failed: {Msg} Will retry in {Min} minutes.",
+                msg, RecoveryRetryInterval.TotalMinutes);
     }
 
     // ---------------------------------------------------------------- logging plumbing
@@ -433,6 +768,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public void Dispose()
     {
+        _backlight.SessionOpened -= OnSessionOpened;
+        _backlight.DeviceListChanged -= OnDeviceListChanged;
+        _deviceChangeDebounce?.Stop();
+        _deviceChangeDebounce = null;
+        _versionFeedbackTimer?.Stop();
+        _versionFeedbackTimer = null;
         _keepAliveTimer?.Dispose();
         _keepAliveTimer = null;
         StopResumeMonitor();

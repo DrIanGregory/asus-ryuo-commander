@@ -83,10 +83,12 @@ public partial class App : Application
         var startup = new StartupRegistrationService(Log.Logger);
 
         // Keep the saved "start with windows" flag honest with the registry's actual state.
-        if (settings.StartWithWindows != startup.IsRegistered())
-        {
-            startup.Set(settings.StartWithWindows);
-        }
+        // When enabled, Set(true) also rewrites a stale exe path (old build location) so the
+        // registration always launches THIS binary.
+        if (settings.StartWithWindows)
+            startup.Set(true);
+        else if (startup.IsRegistered())
+            startup.Set(false);
 
         _viewModel = new MainViewModel(Log.Logger, _uiSink, settings, startup, _levelSwitch);
 

@@ -45,9 +45,17 @@ public sealed class StartupRegistrationService
 
             if (enabled)
             {
-                // Quote the path so spaces in the install dir are handled.
-                key.SetValue(AppConstants.RunValueName, $"\"{ExePath}\"", RegistryValueKind.String);
-                _log.Information("Enabled start with Windows -> {Exe}", ExePath);
+                // Quote the path so spaces in the install dir are handled. Always written
+                // with THIS exe's path so a stale registration (e.g. an old build location)
+                // self-heals on every enable/startup rather than launching the old binary.
+                string value = $"\"{ExePath}\"";
+                string? existing = key.GetValue(AppConstants.RunValueName) as string;
+                if (!string.Equals(existing, value, StringComparison.OrdinalIgnoreCase))
+                {
+                    key.SetValue(AppConstants.RunValueName, value, RegistryValueKind.String);
+                    _log.Information("Start with Windows -> {Exe}{Was}", ExePath,
+                        existing is null ? "" : $" (was {existing})");
+                }
             }
             else if (key.GetValue(AppConstants.RunValueName) is not null)
             {

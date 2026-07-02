@@ -50,13 +50,35 @@ public sealed class BacklightService : IDisposable
     private HidStream? _stream;
     private Thread? _reader;
     private volatile bool _readerRun;
+    private bool _holdWanted;   // hold requested by the caller; sessions self-heal while true
     private int _outputReportLength;
     private int _inputReportLength;
     private bool _disposed;
+    private long _lastInputReportTicks;   // UTC ticks of the last device→host report (Interlocked)
+
+    /// <summary>Raised (on an arbitrary thread) whenever the machine's HID device list changes —
+    /// the cue to re-check whether the Ryuo IV has arrived or left.</summary>
+    public event Action? DeviceListChanged;
+
+    /// <summary>
+    /// Raised each time a NEW hold session opens (startup, self-heal after a failure, or the
+    /// panel re-enumerating after a reboot/recovery). The panel forgets its screen config when
+    /// it reboots, so this is the cue to re-assert the video + brightness. May fire while the
+    /// service's internal lock is held — handlers MUST queue work (e.g. Task.Run) and never
+    /// call back into this service synchronously.
+    /// </summary>
+    public event Action? SessionOpened;
 
     public BacklightService(ILogger log)
     {
         _log = log.ForContext<BacklightService>();
+        DeviceList.Local.Changed += OnHidListChanged;
+    }
+
+    private void OnHidListChanged(object? sender, DeviceListChangedEventArgs e)
+    {
+        try { DeviceListChanged?.Invoke(); }
+        catch (Exception ex) { _log.Warning(ex, "Device-list change handler failed."); }
     }
 
     /// <summary>True when a session is open, or the Ryuo IV HID interface is present on USB.</summary>
@@ -72,11 +94,37 @@ public sealed class BacklightService : IDisposable
     /// </summary>
     public bool StartHold()
     {
-        lock (_sync) { return EnsureOpenLocked() is not null; }
+        lock (_sync)
+        {
+            _holdWanted = true;
+            return EnsureOpenLocked() is not null;
+        }
     }
 
     /// <summary>Close the persistent session (stops the read-drain; panel may then dim on its own).</summary>
-    public void StopHold() => CloseSession();
+    public void StopHold()
+    {
+        lock (_sync) { _holdWanted = false; }
+        CloseSession();
+    }
+
+    /// <summary>
+    /// How long since the device last sent us an input report over the hold session, or null
+    /// when no session is open. A healthy panel streams reports continuously (~10/s); writes
+    /// that "succeed" while this grows large mean the panel firmware has wedged its own HID
+    /// handle (it does this whenever the host stops reading — app restarts, PC sleep) and is
+    /// silently discarding everything until its SerialService is restarted.
+    /// </summary>
+    public TimeSpan? TimeSinceLastInputReport
+    {
+        get
+        {
+            lock (_sync) { if (_stream is null) return null; }
+            long ticks = Interlocked.Read(ref _lastInputReportTicks);
+            if (ticks == 0) return null;
+            return DateTime.UtcNow - new DateTime(ticks, DateTimeKind.Utc);
+        }
+    }
 
     /// <summary>
     /// Set the LCD brightness as a 0–100% value by sending the vendor HID command. If a hold
@@ -87,25 +135,106 @@ public sealed class BacklightService : IDisposable
     {
         percent = Math.Clamp(percent, 0, 100);
         int seq = Interlocked.Increment(ref _seq) & 0x7FFFFFFF;
-        byte[] frame = BuildFrame(percent, seq);
+        byte[] frame = BuildFrame("brightness", "{\"value\":" + percent + "}", seq);
 
-        // Fast path: write over the open hold session.
+        var (ok, msg) = SendFrame(frame, "brightness " + percent + "%");
+        if (ok)
+        {
+            LogSet(percent, quiet);
+            return (true, $"Brightness set to {percent}% over USB HID.");
+        }
+        return (false, msg);
+    }
+
+    /// <summary>
+    /// Make the panel play a video file already present in <c>/sdcard/pcMedia</c> (or one of
+    /// the stock presets in <c>/sdcard/pcMediaPreset</c> — the firmware resolves preset names
+    /// itself). Sends the same <c>waterBlockScreenId</c> config Info Hub uses: id=Customization,
+    /// Full Screen, single-loop, the given file.
+    /// </summary>
+    public (bool Ok, string Message) SetPanelVideo(string deviceFileName)
+    {
+        // Matches the captured Info Hub message exactly (id "Customization" + CamelCase playMode).
+        string body =
+            "{\"id\":\"Customization\",\"screenMode\":\"Full Screen\",\"playMode\":\"Single\"," +
+            "\"media\":[" + JsonString(deviceFileName) + "]," +
+            "\"settings\":{\"titleColor\":\"#25cfe5\",\"contentColor\":\"#25cfe5\"," +
+            "\"filter\":{\"value\":null,\"opacity\":100},\"badges\":[]}," +
+            "\"sysinfoDisplay\":[\"\",\"\",\"\",\"\",\"\",\"\"]}";
+
+        // The device re-asserts its persisted config every few seconds, so a single send can
+        // lose the race. Assert a few times (fresh SeqNumber each) to reliably take over.
+        (bool Ok, string Message) last = (false, "not sent");
+        for (int i = 0; i < 4; i++)
+        {
+            int seq = Interlocked.Increment(ref _seq) & 0x7FFFFFFF;
+            last = SendFrame(BuildFrame("waterBlockScreenId", body, seq), "panel video");
+            if (!last.Ok) break;
+            if (i < 3) Thread.Sleep(600);
+        }
+        if (last.Ok)
+        {
+            _log.Information("Panel video set to {File}.", deviceFileName);
+            return (true, $"Panel video set to {deviceFileName}.");
+        }
+        _log.Error("Panel video set failed ({File}): {Msg}", deviceFileName, last.Message);
+        return last;
+    }
+
+    /// <summary>
+    /// Deliver one framed message with the full self-heal ladder: write over the hold session
+    /// (reopening it first if the hold is wanted but the session died), retry once over a
+    /// freshly reopened session, then fall back to a one-shot connection.
+    /// </summary>
+    private (bool Ok, string Message) SendFrame(byte[] frame, string what)
+    {
+        // Fast path: write over the open hold session. If a hold is wanted but the session
+        // died (earlier write failure, device re-enumerated over sleep), reopen it here —
+        // the read-drain is what keeps the panel out of standby, so a one-shot fallback is
+        // never a substitute for the session.
         HidStream? held;
         int heldLen;
-        lock (_sync) { held = _stream; heldLen = _outputReportLength; }
+        lock (_sync)
+        {
+            held = _holdWanted ? EnsureOpenLocked() : _stream;
+            heldLen = _outputReportLength;
+        }
         if (held is not null)
         {
             try
             {
                 WriteReport(held, frame, heldLen);
-                LogSet(percent, quiet);
-                return (true, $"Brightness set to {percent}% over USB HID.");
+                return (true, "ok");
             }
             catch (Exception ex)
             {
-                _log.Error(ex, "HID write over hold session failed (percent={Percent}); reopening.", percent);
+                _log.Error(ex, "HID write over hold session failed ({What}); reopening.", what);
                 CloseSession();
-                // fall through to a one-shot attempt
+            }
+
+            // Reopen the hold session once and retry over it, so the read-drain comes back
+            // immediately rather than waiting for the next keep-alive tick.
+            if (WantHold())
+            {
+                lock (_sync)
+                {
+                    held = EnsureOpenLocked();
+                    heldLen = _outputReportLength;
+                }
+                if (held is not null)
+                {
+                    try
+                    {
+                        WriteReport(held, frame, heldLen);
+                        return (true, "ok (session reopened)");
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.Error(ex, "HID write failed again over the reopened session ({What}).", what);
+                        CloseSession();
+                        // fall through to a one-shot attempt
+                    }
+                }
             }
         }
 
@@ -119,14 +248,22 @@ public sealed class BacklightService : IDisposable
             options.SetOption(OpenOption.Interruptible, true);
             using HidStream stream = dev.Open(options);
             WriteReport(stream, frame, SafeLen(dev.GetMaxOutputReportLength));
-            LogSet(percent, quiet);
-            return (true, $"Brightness set to {percent}% over USB HID.");
+            return (true, "ok (one-shot)");
         }
         catch (Exception ex)
         {
-            _log.Error(ex, "HID write failed (percent={Percent}).", percent);
+            _log.Error(ex, "HID write failed ({What}).", what);
             return (false, "HID write failed: " + ex.Message);
         }
+    }
+
+    /// <summary>Minimal JSON string literal (quotes + backslash escaping) for file names.</summary>
+    private static string JsonString(string s)
+        => "\"" + s.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+
+    private bool WantHold()
+    {
+        lock (_sync) { return _holdWanted && !_disposed; }
     }
 
     private void LogSet(int percent, bool quiet)
@@ -165,11 +302,15 @@ public sealed class BacklightService : IDisposable
         _outputReportLength = SafeLen(dev.GetMaxOutputReportLength);
         _inputReportLength = SafeLen(dev.GetMaxInputReportLength);
         _stream = stream;
+        // Baseline the silence clock at open so a fresh session isn't instantly "wedged".
+        Interlocked.Exchange(ref _lastInputReportTicks, DateTime.UtcNow.Ticks);
         _readerRun = true;
         _reader = new Thread(() => ReadLoop(stream)) { IsBackground = true, Name = "RyuoHidReader" };
         _reader.Start();
         _log.Information("HID session opened (out={Out}, in={In}); read-drain active to keep the panel awake.",
             _outputReportLength, _inputReportLength);
+        try { SessionOpened?.Invoke(); }
+        catch (Exception ex) { _log.Warning(ex, "SessionOpened handler failed."); }
         return _stream;
     }
 
@@ -186,6 +327,7 @@ public sealed class BacklightService : IDisposable
             try
             {
                 stream.Read(buf);   // drains one device→host report; throws TimeoutException if none
+                Interlocked.Exchange(ref _lastInputReportTicks, DateTime.UtcNow.Ticks);
             }
             catch (TimeoutException)
             {
@@ -193,7 +335,23 @@ public sealed class BacklightService : IDisposable
             }
             catch (Exception ex)
             {
-                if (_readerRun) _log.Debug(ex, "HID read-drain loop ended (device gone / session closed).");
+                // _readerRun still true means this wasn't a deliberate CloseSession() — the
+                // device dropped the stream. Without the drain the panel idle-dims, so tear
+                // the dead session down (no self-join!) and let SetPercent's self-heal reopen it.
+                bool unexpected = false;
+                lock (_sync)
+                {
+                    if (_readerRun && ReferenceEquals(_stream, stream))
+                    {
+                        unexpected = true;
+                        try { _stream.Dispose(); } catch { }
+                        _stream = null;
+                        _reader = null;
+                    }
+                }
+                if (unexpected)
+                    _log.Warning(ex, "HID read-drain stopped unexpectedly (device gone?); " +
+                                     "session will reopen on the next brightness write.");
                 break;
             }
         }
@@ -217,6 +375,7 @@ public sealed class BacklightService : IDisposable
 
     public void Dispose()
     {
+        DeviceList.Local.Changed -= OnHidListChanged;
         lock (_sync) { _disposed = true; }
         CloseSession();
     }
@@ -249,13 +408,12 @@ public sealed class BacklightService : IDisposable
         }
     }
 
-    /// <summary>Build the framed brightness command for a 0–100 value.</summary>
-    internal static byte[] BuildFrame(int percent, int seq)
+    /// <summary>Build a framed <c>POST &lt;cmdType&gt;</c> message with a JSON body.</summary>
+    internal static byte[] BuildFrame(string cmdType, string body, int seq)
     {
-        string body = "{\"value\":" + percent + "}";
         int contentLength = Encoding.UTF8.GetByteCount(body);
         string text =
-            "POST brightness 1.0\r\n" +
+            "POST " + cmdType + " 1.0\r\n" +
             "SeqNumber=" + seq + "\r\n" +
             "ContentType=json\r\n" +
             "ContentLength=" + contentLength + "\r\n" +

@@ -5,8 +5,9 @@ generally, whenever ASUS Info Hub isn't actively driving it — even though the 
 still claims 100%.
 
 A small Windows (.NET 8 / WPF) tray app that holds the LCD at your chosen brightness by
-speaking the panel's **native USB‑HID protocol** directly. **No adb, and no ASUS Info Hub
-required at runtime.**
+speaking the panel's **native USB‑HID protocol** directly. ASUS Info Hub doesn't need to be
+running; its bundled `adb.exe` is used only as a **recovery tool** when the panel firmware
+wedges itself (see below).
 
 ![Brightness tab](docs/brightness-tab.png)
 
@@ -94,14 +95,28 @@ override). That's why sysfs / global settings are irrelevant.
 device's HID **input** reports. The app opens the interface and runs a background thread that
 continuously reads and discards them, keeping the firmware's "PC connected" state true.
 
+**The firmware wedge (and auto‑recovery):** the firmware tries to send the host data every
+~100 ms. If the host stops reading for more than a moment — the controlling app exits or
+restarts, or the PC sleeps — the firmware's send path errors out, it **nulls its own HID
+handle** (`SerialService` logs `hidHandle == null` forever after), and from then on it
+**silently discards every host message**. Host‑side writes still complete "successfully";
+the panel just stays in its ~20% standby dim. The firmware never recovers by itself — its
+`SerialService` must be restarted (or the panel rebooted). The app detects this state
+(writes succeed while the input stream stays silent > 30 s) and automatically restarts the
+panel's `SerialService` via ASUS's bundled `adb.exe` (the Ryuo grants adb as shipped); the
+USB gadget re‑enumerates and brightness re‑applies, all hands‑free. This wedge is the real
+reason the panel "stays dim after sleep" even with Info Hub claiming 100%.
+
 ---
 
 ## Requirements
 
 - Windows 10/11, **.NET 8** runtime (or the SDK to build).
 - The Ryuo IV AIO connected over USB.
-- **No adb. No ASUS Info Hub. No administrator rights.** The app talks to the HID interface
-  directly via [HidSharp](https://www.nuget.org/packages/HidSharp).
+- **No admin rights; ASUS Info Hub doesn't need to run.** The app talks to the HID interface
+  directly via [HidSharp](https://www.nuget.org/packages/HidSharp). Info Hub's **installed
+  files** are still wanted: its bundled `adb.exe` is what the app uses to un‑wedge the panel
+  firmware automatically (without it, recovery falls back to "power‑cycle the PC").
 
 ---
 
@@ -126,8 +141,9 @@ found.
 
 | Piece | Role |
 |-------|------|
-| `BacklightService` | Talks the USB‑HID protocol via HidSharp. Opens a **persistent session** with a background **read‑drain** thread (`StartHold`/`StopHold`) to keep the panel awake; `SetPercent(p)` sends the framed `{"value":p}` command over it. |
-| `MainViewModel` | Slider/Apply, the 3‑second keep‑alive that re‑applies brightness, device detection, and settings. Owns the hold lifecycle. |
+| `BacklightService` | Talks the USB‑HID protocol via HidSharp. Opens a **persistent session** with a background **read‑drain** thread (`StartHold`/`StopHold`) to keep the panel awake; `SetPercent(p)` sends the framed `{"value":p}` command over it. Sessions **self‑heal**: a failed write reopens the session (read‑drain included), and HID hot‑plug events re‑detect the panel when it re‑enumerates. Tracks when the panel last sent an input report (the wedge signal). |
+| `PanelRecoveryService` | Un‑wedges the panel firmware: restarts the on‑device `SerialService` via ASUS's bundled `adb.exe` when writes succeed but the panel has gone silent. |
+| `MainViewModel` | Slider/Apply, the 3‑second keep‑alive that re‑applies brightness, wedge detection (silent‑panel check on every tick, throttled recovery), device hot‑plug refresh, and settings. Owns the hold lifecycle. |
 | `ResumeMonitor` | Subscribes to `SystemEvents.PowerModeChanged`; on resume, waits ~10 s then re‑applies the target (belt‑and‑suspenders on top of the keep‑alive). |
 | `StartupRegistrationService` | "Start with Windows" via the per‑user `HKCU\…\Run` key. |
 | `TrayIconService` | System‑tray icon + menu (open / restore brightness / exit). |
@@ -139,9 +155,12 @@ found.
 
 - **Don't run this and ASUS Info Hub at the same time.** They use the same USB‑HID channel
   and will fight over it. Use one or the other.
-- **During real sleep the panel still dims.** While the PC is suspended, nothing on the host
-  can run to hold the session, so the firmware dims it. The app restores brightness within a
-  few seconds of waking (keep‑alive + resume‑restore). Keeping it bright *through* sleep isn't
+- **During real sleep the panel still dims — and wedges.** While the PC is suspended, nothing
+  on the host can read the panel's stream, so the firmware dims it *and* wedges its HID
+  handle. On wake, the resume‑restore writes are discarded by the wedged firmware; the app's
+  wedge detection notices the silent panel within ~30–45 s and restarts the panel's
+  `SerialService` over adb, after which brightness re‑applies automatically. Expect up to a
+  minute of dim panel after wake — not seconds. Keeping it bright *through* sleep isn't
   achievable from the host (the device's own `displayInSleep` flag has unwanted side effects).
 - **Brightness is effectively held at your chosen level while the app runs.** The device's
   persisted value isn't rewritten by the brightness command, so holding relies on the app's

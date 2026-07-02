@@ -11,6 +11,8 @@
     <Nullable>enable</Nullable>
     <AssemblyName>RyuoBrightnessFix</AssemblyName>
     <RootNamespace>RyuoBrightnessFix</RootNamespace>
+    <!-- Shown in the status bar (click-to-copy); bump on every user-visible change. -->
+    <Version>1.2.0</Version>
     <!-- NOTE: InvariantGlobalization must stay OFF — WPF data binding needs a real
          culture (en-US) or it throws "Cannot find non-neutral culture" at render. -->
     <!-- The cyan-dragon emblem ("Ryuo" = dragon king) is the single app icon,
@@ -31,6 +33,12 @@
        by the NotifyIcon (its 16x16 frame) for the tray. -->
   <ItemGroup>
     <Resource Include="Resources\Icons\app.ico" />
+  </ItemGroup>
+
+  <!-- Bundled ffmpeg for the "Panel Video" transcode. The binary is git-ignored;
+       run tools\fetch-ffmpeg.ps1 to place it, then it is copied next to the exe. -->
+  <ItemGroup Condition="Exists('ffmpeg.exe')">
+    <None Include="ffmpeg.exe" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

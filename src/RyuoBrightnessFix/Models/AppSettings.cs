@@ -29,6 +29,15 @@ public sealed class AppSettings
     /// </summary>
     public bool KeepBrightnessAlive { get; set; } = true;
 
+    // --- Panel video ---
+    /// <summary>
+    /// The device-side file name of the active panel video (in /sdcard/pcMedia, or a stock
+    /// preset name from /sdcard/pcMediaPreset). Re-asserted whenever the HID session reopens,
+    /// because the panel forgets its screen config when it reboots and would otherwise sit on
+    /// a black screen. Defaults to ASUS's stock hardware-info video.
+    /// </summary>
+    public string? PanelVideoFile { get; set; } = "RYUO_IV_HW_Info_01.mp4";
+
     // --- Diagnostics ---
     /// <summary>
     /// When true, the logger captures full verbose/debug detail (adb command lines,

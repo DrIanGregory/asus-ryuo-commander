@@ -10,10 +10,15 @@
         FontFamily="Segoe UI"
         TextOptions.TextFormattingMode="Display">
 
-    <Grid Margin="18">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+    </Window.Resources>
+
+    <Grid Margin="18,18,18,0">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <!-- ===== Header with status badge ===== -->
@@ -77,6 +82,36 @@
                 </StackPanel>
             </TabItem>
 
+            <!-- ================= VIDEO ================= -->
+            <TabItem Header="Video">
+                <StackPanel>
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel>
+                            <TextBlock Text="Panel Video" Style="{StaticResource HeaderText}" />
+                            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                <Button Content="Choose video…" Style="{StaticResource SecondaryButton}"
+                                        Command="{Binding ChooseVideoCommand}" Padding="12,6" />
+                                <TextBlock Text="{Binding SelectedVideoName}" VerticalAlignment="Center"
+                                           Margin="12,0,0,0" Style="{StaticResource SubtleText}"
+                                           TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                            <Button Content="Set as panel video" Style="{StaticResource AccentButton}"
+                                    Command="{Binding SetVideoCommand}" Width="180" HorizontalAlignment="Left"
+                                    Margin="0,12,0,0" />
+                            <TextBlock Text="{Binding VideoStatus}" Style="{StaticResource SubtleText}"
+                                       Margin="0,10,0,0" TextWrapping="Wrap" />
+                            <TextBlock Text="{Binding ActiveVideoDisplay}" Style="{StaticResource SubtleText}"
+                                       Margin="0,6,0,0" TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource Card}">
+                        <TextBlock Style="{StaticResource SubtleText}" TextWrapping="Wrap"
+                                   Text="Transcodes your video to the panel's 2240×1080 format, uploads it, and loops it full-screen — the same path ASUS Info Hub uses (no Info Hub needed). Needs ffmpeg (bundled) and ASUS's adb. The panel forgets its content when it reboots; the app re-asserts this video automatically every time it reconnects, so the screen never sits black. Note: at 100% brightness a dark video still looks dim — that's the footage, not the backlight." />
+                    </Border>
+                </StackPanel>
+            </TabItem>
+
             <!-- ================= SETTINGS ================= -->
             <TabItem Header="Settings">
                 <StackPanel>
@@ -126,5 +161,23 @@
             </TabItem>
 
         </TabControl>
+
+        <!-- ===== Status bar ===== -->
+        <Border Grid.Row="2" Margin="-18,10,-18,0" Padding="18,6,18,7"
+                Background="#FF202024" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0">
+            <StackPanel Orientation="Horizontal">
+                <Button Style="{StaticResource StatusBarLinkButton}"
+                        Command="{Binding CopyVersionCommand}"
+                        ToolTip="Click to copy the version to the clipboard">
+                    <TextBlock>
+                        <Run Text="Version" /><Run Text=" " /><Run Text="{Binding AppVersion, Mode=OneWay}" />
+                    </TextBlock>
+                </Button>
+                <TextBlock Margin="10,0,0,0" VerticalAlignment="Center" FontSize="12"
+                           FontFamily="Segoe UI Semibold" Foreground="{StaticResource AccentBrush}"
+                           Text="{Binding VersionFeedbackText}"
+                           Visibility="{Binding VersionFeedbackVisible, Converter={StaticResource BoolToVis}}" />
+            </StackPanel>
+        </Border>
     </Grid>
 </Window>

@@ -97,8 +97,20 @@ public partial class MainWindow : Window
             placement = new MainViewModel.WindowPlacement(Left, Top, ActualWidth, ActualHeight, false);
         }
 
+        // A window that was never shown (started minimized to the tray) still has NaN
+        // Left/Top, and RestoreBounds can be infinite. JSON cannot store non-finite
+        // numbers — saving them makes the ENTIRE settings write throw, losing every
+        // setting changed that session. Keep the previously saved placement instead.
+        if (!HasFiniteBounds(placement)) return;
+
         _vm.SaveWindowPlacement(placement);
     }
+
+    private static bool HasFiniteBounds(MainViewModel.WindowPlacement p) =>
+        p.Left is double l && double.IsFinite(l) &&
+        p.Top is double t && double.IsFinite(t) &&
+        p.Width is double w && double.IsFinite(w) && w > 0 &&
+        p.Height is double h && double.IsFinite(h) && h > 0;
 
     private void QueueSavePlacement()
     {

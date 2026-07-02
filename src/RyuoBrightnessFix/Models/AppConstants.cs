@@ -22,4 +22,33 @@ public static class AppConstants
     public static string LogDir => Path.Combine(AppDataDir, "logs");
 
     public static string ExeDir => AppContext.BaseDirectory;
+
+    /// <summary>
+    /// The app version from the assembly's informational version (the csproj
+    /// &lt;Version&gt;), without any "+commit" SourceLink suffix. Never throws.
+    /// </summary>
+    public static string Version
+    {
+        get
+        {
+            try
+            {
+                var asm = typeof(AppConstants).Assembly;
+                var info = asm
+                    .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+                    .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+                    .FirstOrDefault()?.InformationalVersion;
+                if (!string.IsNullOrWhiteSpace(info))
+                {
+                    int plus = info.IndexOf('+');
+                    return plus > 0 ? info[..plus] : info;
+                }
+                return asm.GetName().Version?.ToString(3) ?? "unknown";
+            }
+            catch
+            {
+                return "unknown";
+            }
+        }
+    }
 }
