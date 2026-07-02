@@ -1,31 +1,35 @@
 # ASUS Ryuo Commander
 
-Fixes the **ASUS ROG Ryuo IV** AIO LCD that **dims to ~1% after sleep** — and, more
-generally, whenever ASUS Info Hub isn't actively driving it — even though the software
-still claims 100%.
+Take full control of the **ASUS ROG Ryuo IV** AIO LCD — **brightness that actually holds**
+and **any video you like on the panel** — without ASUS Info Hub running.
 
-A small Windows (.NET 8 / WPF) tray app that holds the LCD at your chosen brightness by
-speaking the panel's **native USB‑HID protocol** directly. ASUS Info Hub doesn't need to be
-running; its bundled `adb.exe` is used only as a **recovery tool** when the panel firmware
-wedges itself (see below).
+A small Windows (.NET 8 / WPF) tray app that speaks the panel's **native USB‑HID protocol**
+directly, keeps the screen alive, plays your video, and **heals every failure mode the panel
+firmware throws at it** — automatically.
 
-![Brightness tab](docs/brightness-tab.png)
+| Brightness | Video | Settings |
+|:---:|:---:|:---:|
+| ![Brightness tab](docs/brightness-tab.png) | ![Video tab](docs/video-tab.png) | ![Settings tab](docs/settings-tab.png) |
 
 ---
 
-## TL;DR
+## What it does
 
-- The Ryuo IV screen is a **Rockchip Android** board (device `cm16`) driving a **DSI panel**,
-  with an on‑device home app (`com.baiyi.homeui.hshomeui`).
-- Brightness is **not** the Linux sysfs backlight, **not** the Android `screen_brightness`
-  setting, and **not** adb. It's a **vendor USB‑HID command**; the firmware applies it as the
-  home‑UI window's `screenBrightness` (a per‑window override).
-- The panel's firmware **dims itself into a low‑power standby a few seconds after the last
-  message from the PC**. It stays awake only while the host **keeps reading its HID input
-  stream** — which is what Info Hub does.
-- This app replicates that: it opens the HID interface, **continuously drains the input
-  stream to hold the session**, and re‑applies your brightness. That keeps the panel bright
-  with Info Hub closed.
+- **Holds the LCD at your chosen brightness.** The panel firmware idle‑dims to ~20% a few
+  seconds after the PC stops talking to it (that's the infamous "dims after sleep even though
+  Armoury Crate says 100%"). The app keeps a live HID session with a read‑drain and re‑applies
+  your level every 3 s.
+- **Plays your video on the panel.** Pick any video file; it's transcoded to the panel's
+  playable format, uploaded, and looped full‑screen — the same path Info Hub uses. Choose the
+  **scale mode**: *Fill* (crop to cover the screen, default), *Fit* (letterbox), or *Stretch*.
+- **Survives everything.** Panel reboots, USB re‑enumeration, PC sleep, firmware wedges — the
+  app detects each one and restores both brightness *and* your video with no interaction:
+  - HID sessions **self‑heal** (failed writes reopen the session and retry);
+  - the panel is **re‑detected on USB hot‑plug**;
+  - a **wedged firmware is un‑wedged automatically** (see below);
+  - the **video is re‑asserted** whenever the panel reconnects, because the panel forgets its
+    screen config on every reboot and would otherwise sit on a black screen.
+- Tray app: start with Windows, start minimized, click‑to‑copy version, rolling logs.
 
 ---
 
@@ -37,7 +41,7 @@ guesses:
 
 1. **sysfs backlight — WRONG.** `/sys/class/backlight/backlight/brightness` (0–256) can be
    written over adb and *reads back* the value, but `actual_brightness` never rises above
-   ~13 and the panel stays dim. The node is decoupled from the DSI panel.
+   ~13 and the panel doesn't respond. The node is decoupled from what you see.
 2. **Android `screen_brightness` — WRONG.** Setting it 10 vs 255 changed nothing on the
    panel. When Info Hub changed brightness, *none* of these values moved.
 3. **adb `transfer_proxy` socket — WRONG.** That abstract socket is the Rockchip **RKNN NPU
@@ -52,7 +56,22 @@ guesses:
    the host **reads** its HID stream. A write‑only client rode on Info Hub's session; once
    Info Hub closed, nobody drained the stream and the panel dropped to standby. The fix is a
    background **read‑drain**.
-7. **`displayInSleep` flag — rejected.** The device has a "display in sleep mode" flag; with
+7. **Why the panel sometimes ignored everything (the firmware wedge):** the firmware tries to
+   send the host data every ~100 ms. If the host stops reading for more than a moment — the
+   controlling app exits, or the PC sleeps — the firmware's send path errors out, it **nulls
+   its own HID handle** (`SerialService` logs `hidHandle == null` forever after), and then
+   **silently discards every host message**. Host writes still "succeed"; the panel just sits
+   dim. It never recovers by itself. The app detects the wedge (writes succeed while the input
+   stream stays silent > 30 s) and restarts the panel's `SerialService` via ASUS's bundled
+   `adb.exe`; the USB gadget re‑enumerates and everything reconnects hands‑free. **This wedge
+   is the real reason the panel "stays dim after sleep"** even with Info Hub claiming 100%.
+8. **Why a "successfully set" video can show a black screen:** the panel is 2240×1080 but its
+   Rockchip **RK3562 decoder rejects H.264 wider than 1920** (`isCodecSupport error: support
+   width = 1920` → `MediaPlayer Error (1,0)` → black). ASUS's own stock videos are
+   **1920×960** and the panel stretches the frame across the full screen (SurfaceFlinger maps
+   the buffer to the whole display, center‑cropping ~3% of height). The app transcodes to
+   exactly that format.
+9. **`displayInSleep` flag — rejected.** The device has a "display in sleep mode" flag; with
    it on, the panel stayed lit during sleep **but swapped to a standby video and still dimmed
    after wake**. Side effects not worth it.
 
@@ -67,13 +86,23 @@ guesses:
 **Message** (HTTP‑like text, **CRLF** line endings):
 
 ```
-POST brightness 1.0\r\n
+POST <cmdType> 1.0\r\n
 SeqNumber=<n>\r\n
 ContentType=json\r\n
 ContentLength=<len(body)>\r\n
 \r\n
-{"value":N}                      # N = 0..100
+<json body>
 ```
+
+- `cmdType=brightness`, body `{"value":N}` (N = 0..100). The firmware computes
+  `screenBrightness = ((int)(N × 2.55)) / 255` and applies it as the home‑UI window's
+  `WindowManager.LayoutParams.screenBrightness` (a per‑window override) — which is why
+  sysfs / global settings are irrelevant.
+- `cmdType=waterBlockScreenId`, body
+  `{"id":"Customization","screenMode":"Full Screen","playMode":"Single","media":["<file>"],…}`
+  makes the home‑UI loop `/sdcard/pcMedia/<file>` full‑screen (stock preset names from
+  `/sdcard/pcMediaPreset` also resolve). The file itself is pushed over **adb** (MI_01),
+  exactly as Info Hub does.
 
 **Framing** (byte‑stuffed):
 
@@ -87,25 +116,14 @@ ContentLength=<len(body)>\r\n
   (i.e. `len(escape(payload)) + len(escape(checksum))`).
 - Delivered as **one HID output report**: `[0x00] + frame + zero‑pad` to the report length.
 
-**Value mapping:** the firmware computes `screenBrightness = ((int)(N × 2.55)) / 255` and
-sets it as the home‑UI window's `WindowManager.LayoutParams.screenBrightness` (per‑window
-override). That's why sysfs / global settings are irrelevant.
-
 **Session / read‑drain:** the panel stays out of standby only while the host reads the
 device's HID **input** reports. The app opens the interface and runs a background thread that
 continuously reads and discards them, keeping the firmware's "PC connected" state true.
+A healthy panel streams reports constantly (~10/s) — their absence while writes succeed is
+how the app detects the firmware wedge described above.
 
-**The firmware wedge (and auto‑recovery):** the firmware tries to send the host data every
-~100 ms. If the host stops reading for more than a moment — the controlling app exits or
-restarts, or the PC sleeps — the firmware's send path errors out, it **nulls its own HID
-handle** (`SerialService` logs `hidHandle == null` forever after), and from then on it
-**silently discards every host message**. Host‑side writes still complete "successfully";
-the panel just stays in its ~20% standby dim. The firmware never recovers by itself — its
-`SerialService` must be restarted (or the panel rebooted). The app detects this state
-(writes succeed while the input stream stays silent > 30 s) and automatically restarts the
-panel's `SerialService` via ASUS's bundled `adb.exe` (the Ryuo grants adb as shipped); the
-USB gadget re‑enumerates and brightness re‑applies, all hands‑free. This wedge is the real
-reason the panel "stays dim after sleep" even with Info Hub claiming 100%.
+**Video format:** H.264 High, yuv420p, **1920×960**, 30 fps, no audio, mp4 — identical to
+ASUS's stock videos. Wider than 1920 is rejected by the hardware decoder (black screen).
 
 ---
 
@@ -115,25 +133,30 @@ reason the panel "stays dim after sleep" even with Info Hub claiming 100%.
 - The Ryuo IV AIO connected over USB.
 - **No admin rights; ASUS Info Hub doesn't need to run.** The app talks to the HID interface
   directly via [HidSharp](https://www.nuget.org/packages/HidSharp). Info Hub's **installed
-  files** are still wanted: its bundled `adb.exe` is what the app uses to un‑wedge the panel
-  firmware automatically (without it, recovery falls back to "power‑cycle the PC").
+  files** are still wanted: its bundled `adb.exe` is used to upload videos and to un‑wedge
+  the panel firmware automatically (without it, recovery falls back to "power‑cycle the PC").
+- `ffmpeg.exe` next to the app for the Video feature (run `tools\fetch-ffmpeg.ps1` once; the
+  binary is git‑ignored and bundled into builds automatically).
 
 ---
 
 ## Using it
 
 1. Build (below) and run `RyuoBrightnessFix.exe`.
-2. **Brightness** tab: drag the slider and click **Apply** (or **100%**).
-3. Keep **"Hold brightness"** ticked (default) — this opens the HID session, drains the
-   device stream, and re‑applies your level so the panel doesn't dim itself.
-4. **"Restore this brightness after waking"** re‑applies promptly on resume.
-5. **Settings** tab: **Start with Windows**, **Start minimized**, **Show tray icon** to run
-   silently from the tray.
+2. **Brightness** tab: drag the slider and click **Apply** (or **100%**). Keep
+   **"Hold brightness"** ticked (default) — this opens the HID session, drains the device
+   stream, and re‑applies your level so the panel doesn't dim itself.
+   **"Restore this brightness after waking"** re‑applies promptly on resume.
+3. **Video** tab: **Choose video…**, pick a **Scale mode** (*Fill* crops to cover the whole
+   screen — no bars; *Fit* letterboxes; *Stretch* distorts), then **Set as panel video**.
+   The video is remembered and re‑asserted automatically whenever the panel reconnects.
+   Tip: at 100% brightness a dark video still looks dim — that's the footage, not the
+   backlight.
+4. **Settings** tab: **Start with Windows**, **Start minimized**, **Show tray icon** to run
+   silently from the tray; verbose logging and the activity pane for diagnostics.
 
-![Settings tab](docs/settings-tab.png)
-
-The header shows the live state with a green **Connected** badge when the HID interface is
-found.
+The header shows the live state with a green **Connected** badge; the status bar shows the
+version (click to copy).
 
 ---
 
@@ -141,11 +164,12 @@ found.
 
 | Piece | Role |
 |-------|------|
-| `BacklightService` | Talks the USB‑HID protocol via HidSharp. Opens a **persistent session** with a background **read‑drain** thread (`StartHold`/`StopHold`) to keep the panel awake; `SetPercent(p)` sends the framed `{"value":p}` command over it. Sessions **self‑heal**: a failed write reopens the session (read‑drain included), and HID hot‑plug events re‑detect the panel when it re‑enumerates. Tracks when the panel last sent an input report (the wedge signal). |
+| `BacklightService` | Talks the USB‑HID protocol via HidSharp. Opens a **persistent session** with a background **read‑drain** thread to keep the panel awake; `SetPercent(p)` / `SetPanelVideo(f)` send framed commands over it. Sessions **self‑heal** (a failed write reopens and retries), HID **hot‑plug** events re‑detect the panel, and the time since the last device report is tracked as the wedge signal. |
 | `PanelRecoveryService` | Un‑wedges the panel firmware: restarts the on‑device `SerialService` via ASUS's bundled `adb.exe` when writes succeed but the panel has gone silent. |
-| `MainViewModel` | Slider/Apply, the 3‑second keep‑alive that re‑applies brightness, wedge detection (silent‑panel check on every tick, throttled recovery), device hot‑plug refresh, and settings. Owns the hold lifecycle. |
-| `ResumeMonitor` | Subscribes to `SystemEvents.PowerModeChanged`; on resume, waits ~10 s then re‑applies the target (belt‑and‑suspenders on top of the keep‑alive). |
-| `StartupRegistrationService` | "Start with Windows" via the per‑user `HKCU\…\Run` key. |
+| `MediaService` | The Video pipeline: ffmpeg transcode (1920×960, scale mode applied), adb push to `/sdcard/pcMedia`, HID activation. |
+| `MainViewModel` | Slider/Apply, the 3‑second keep‑alive, wedge detection, hot‑plug refresh, **panel‑state re‑assert** (video + brightness on every session open), Video tab, and settings. |
+| `ResumeMonitor` | On resume from sleep, re‑applies the target promptly (the wedge detector handles the firmware's post‑sleep state a few seconds later). |
+| `StartupRegistrationService` | "Start with Windows" via the per‑user `HKCU\…\Run` key; self‑heals a stale exe path on every start. |
 | `TrayIconService` | System‑tray icon + menu (open / restore brightness / exit). |
 | Diagnostics | Toggle **verbose debug logging** in Settings; logs to `%APPDATA%\RyuoBrightnessFix\logs\`, with an "Open logs folder" button. |
 
@@ -155,28 +179,16 @@ found.
 
 - **Don't run this and ASUS Info Hub at the same time.** They use the same USB‑HID channel
   and will fight over it. Use one or the other.
-- **During real sleep the panel still dims — and wedges.** While the PC is suspended, nothing
-  on the host can read the panel's stream, so the firmware dims it *and* wedges its HID
-  handle. On wake, the resume‑restore writes are discarded by the wedged firmware; the app's
-  wedge detection notices the silent panel within ~30–45 s and restarts the panel's
-  `SerialService` over adb, after which brightness re‑applies automatically. Expect up to a
-  minute of dim panel after wake — not seconds. Keeping it bright *through* sleep isn't
+- **During real sleep the panel still dims — and wedges.** While the PC is suspended nothing
+  can read the panel's stream, so the firmware dims it *and* wedges its HID handle. On wake,
+  the app's wedge detection notices the silent panel within ~30–45 s and restarts the panel's
+  `SerialService` over adb, after which brightness and the video re‑apply automatically.
+  Expect up to a minute of dim panel after wake. Keeping it bright *through* sleep isn't
   achievable from the host (the device's own `displayInSleep` flag has unwanted side effects).
-- **Brightness is effectively held at your chosen level while the app runs.** The device's
-  persisted value isn't rewritten by the brightness command, so holding relies on the app's
-  keep‑alive re‑applying it.
+- **Brightness is held, not persisted.** The device's own saved value isn't rewritten by the
+  brightness command, so holding relies on the app's keep‑alive re‑applying it.
 - Targets the **Ryuo IV** specifically (`VID 0x0B05 / PID 0x1C76`, interface MI_00). Other
   ASUS LCDs will differ.
-
----
-
-## Manual reference
-
-A standalone Python sender (used during development) lives outside this repo; the essential
-logic is: enumerate HID `VID 0x0B05 / PID 0x1C76` interface MI_00, build the framed
-`POST brightness 1.0 … {"value":N}` message above, and write it as a 1025‑byte output report
-(`[0x00] + frame + zero‑pad`). To hold it, also open a read loop that drains the device's
-input reports.
 
 ---
 
@@ -184,12 +196,14 @@ input reports.
 
 ```powershell
 dotnet build RyuoBrightnessFix.sln -c Release
+powershell -File tools\fetch-ffmpeg.ps1   # once, for the Video feature
 ```
 
 Output: `src\RyuoBrightnessFix\bin\Release\net8.0-windows\RyuoBrightnessFix.exe`.
 
 Dependencies (restored automatically): WPF, **HidSharp** (USB‑HID), **Microsoft.Win32.SystemEvents**
-(resume detection), **Serilog** (logging).
+(resume detection), **Serilog** (logging). ffmpeg and ASUS's adb are external tools invoked
+by the Video / recovery features.
 
 ---
 
