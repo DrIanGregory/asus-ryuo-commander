@@ -21,7 +21,13 @@ firmware throws at it** — automatically.
   your level every 3 s.
 - **Plays your video on the panel.** Pick any video file; it's transcoded to the panel's
   playable format, uploaded, and looped full‑screen — the same path Info Hub uses. Choose the
-  **scale mode**: *Fill* (crop to cover the screen, default), *Fit* (letterbox), or *Stretch*.
+  **scale mode**: *Fill* (crop to cover the screen, default), *Fit* (letterbox), or *Stretch* —
+  with a **live LCD‑shaped preview** in the app showing exactly how the panel will render it.
+- **Shows live system metrics on the panel.** Up to six widgets over the video (CPU/GPU
+  temperature, loads, clocks, fan/pump RPM, motherboard temperature, clock) — the same
+  telemetry Info Hub streams, reverse‑engineered (`STATE all` snapshots every 3 s) and fed
+  from LibreHardwareMonitor. Full sensor set (CPU temp, fan RPM) needs the app run as
+  administrator; loads/GPU/memory/disk/network work without.
 - **Survives everything.** Panel reboots, USB re‑enumeration, PC sleep, firmware wedges — the
   app detects each one and restores both brightness *and* your video with no interaction:
   - HID sessions **self‑heal** (failed writes reopen the session and retry);
@@ -99,10 +105,20 @@ ContentLength=<len(body)>\r\n
   `WindowManager.LayoutParams.screenBrightness` (a per‑window override) — which is why
   sysfs / global settings are irrelevant.
 - `cmdType=waterBlockScreenId`, body
-  `{"id":"Customization","screenMode":"Full Screen","playMode":"Single","media":["<file>"],…}`
+  `{"id":"Customization","screenMode":"Full Screen","playMode":"Single","media":["<file>"],
+  "sysinfoDisplay":["<slot1>",…,"<slot6>"],…}`
   makes the home‑UI loop `/sdcard/pcMedia/<file>` full‑screen (stock preset names from
-  `/sdcard/pcMediaPreset` also resolve). The file itself is pushed over **adb** (MI_01),
-  exactly as Info Hub does.
+  `/sdcard/pcMediaPreset` also resolve) and configures the six metric widget slots. Valid slot
+  tokens (extracted from the HomeUI apk): `CPU Temperature/Usage/Load/Speed Average/Voltage`,
+  `GPU Temperature/Usage/Load/Speed/Frequency/Power/Voltage`, `Memory Frequency`,
+  `Motherboard Temperature`, `Date&Time`, `Fan Speed <fan name>`. Empty string hides a slot.
+  The file itself is pushed over **adb** (MI_01), exactly as Info Hub does.
+- **Telemetry stream** (first line `STATE all 1`, plus a `Date=<unix ms>` header): a JSON
+  snapshot of live values the widgets render, sent every few seconds —
+  `{"network":{…},"memory":{…},"cpu":{"load","temperature","temperaturePackage",
+  "speedAverage","power","voltage","usage"},"gpu":{…},"disk":{…},
+  "fans":[{"onBoard":true,"name":"AIO Pump","value":3146},…],"motherboard":{…},"timestamp":…}`.
+  Notably the **AIO pump RPM is sent *to* the panel by the PC**, not measured by the cooler.
 
 **Framing** (byte‑stuffed):
 
@@ -148,11 +164,16 @@ ASUS's stock videos. Wider than 1920 is rejected by the hardware decoder (black 
    stream, and re‑applies your level so the panel doesn't dim itself.
    **"Restore this brightness after waking"** re‑applies promptly on resume.
 3. **Video** tab: **Choose video…**, pick a **Scale mode** (*Fill* crops to cover the whole
-   screen — no bars; *Fit* letterboxes; *Stretch* distorts), then **Set as panel video**.
+   screen — no bars; *Fit* letterboxes; *Stretch* distorts) and check the **LCD preview**
+   (the panel's exact shape, with your scale mode applied live), then **Set as panel video**.
    The video is remembered and re‑asserted automatically whenever the panel reconnects.
    Tip: at 100% brightness a dark video still looks dim — that's the footage, not the
    backlight.
-4. **Settings** tab: **Start with Windows**, **Start minimized**, **Show tray icon** to run
+4. **Metrics** tab: tick **Show live system metrics on the LCD** and pick up to six widgets
+   (temperatures, loads, fan/pump speeds, clock). Values refresh every 3 s while the app
+   runs; the slot layout rides along with the video config and survives panel reboots. Run
+   the app as administrator for CPU temperature and fan RPMs.
+5. **Settings** tab: **Start with Windows**, **Start minimized**, **Show tray icon** to run
    silently from the tray; verbose logging and the activity pane for diagnostics.
 
 The header shows the live state with a green **Connected** badge; the status bar shows the
@@ -167,6 +188,7 @@ version (click to copy).
 | `BacklightService` | Talks the USB‑HID protocol via HidSharp. Opens a **persistent session** with a background **read‑drain** thread to keep the panel awake; `SetPercent(p)` / `SetPanelVideo(f)` send framed commands over it. Sessions **self‑heal** (a failed write reopens and retries), HID **hot‑plug** events re‑detect the panel, and the time since the last device report is tracked as the wedge signal. |
 | `PanelRecoveryService` | Un‑wedges the panel firmware: restarts the on‑device `SerialService` via ASUS's bundled `adb.exe` when writes succeed but the panel has gone silent. |
 | `MediaService` | The Video pipeline: ffmpeg transcode (1920×960, scale mode applied), adb push to `/sdcard/pcMedia`, HID activation. |
+| `SystemMetricsService` | Collects live sensors via LibreHardwareMonitor and renders the `STATE all` JSON snapshot the panel's widgets consume. |
 | `MainViewModel` | Slider/Apply, the 3‑second keep‑alive, wedge detection, hot‑plug refresh, **panel‑state re‑assert** (video + brightness on every session open), Video tab, and settings. |
 | `ResumeMonitor` | On resume from sleep, re‑applies the target promptly (the wedge detector handles the firmware's post‑sleep state a few seconds later). |
 | `StartupRegistrationService` | "Start with Windows" via the per‑user `HKCU\…\Run` key; self‑heals a stale exe path on every start. |

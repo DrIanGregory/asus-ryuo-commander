@@ -92,6 +92,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                    "Target={Target}%, DebugLogging={Debug}.",
             _keepBrightnessAlive, _autoFixOnResume, _brightnessPercent, _debugLogging);
 
+        InitializeMetrics();
         RefreshDevice();
     }
 
@@ -413,10 +414,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             if (SetProperty(ref _selectedVideoPath, value))
             {
                 OnPropertyChanged(nameof(SelectedVideoName));
+                OnPropertyChanged(nameof(HasSelectedVideo));
                 SetVideoCommand.RaiseCanExecuteChanged();
             }
         }
     }
+
+    public bool HasSelectedVideo => !string.IsNullOrEmpty(_selectedVideoPath);
 
     public string SelectedVideoName =>
         string.IsNullOrEmpty(_selectedVideoPath) ? "No video chosen" : Path.GetFileName(_selectedVideoPath);
@@ -512,7 +516,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         try
         {
             var progress = new Progress<string>(s => VideoStatus = s);
-            var (ok, msg, deviceName) = await _media.SetPanelVideoAsync(path, SelectedVideoScaleMode, progress);
+            var (ok, msg, deviceName) = await _media.SetPanelVideoAsync(
+                path, SelectedVideoScaleMode, EffectiveMetricSlots(), progress);
             VideoStatus = msg;
             if (ok && deviceName is not null)
             {
@@ -537,6 +542,204 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             VideoBusy = false;
         }
+    }
+
+    // ---------------------------------------------------------------- metrics
+
+    /// <summary>One of the six metric widget slots on the panel.</summary>
+    public sealed class MetricSlot : ObservableObject
+    {
+        private readonly Action _changed;
+        private string _selected;
+
+        public MetricSlot(int number, string selected, Action changed)
+        {
+            Number = number;
+            _selected = selected;
+            _changed = changed;
+        }
+
+        public int Number { get; }
+        public string Selected
+        {
+            get => _selected;
+            set { if (SetProperty(ref _selected, value)) _changed(); }
+        }
+    }
+
+    private const string MetricNone = "(None)";
+
+    // The widget vocabulary the panel firmware understands (extracted from the HomeUI apk),
+    // plus "Fan Speed <header>" entries discovered from the motherboard once sensors open.
+    private static readonly string[] MetricVocabulary =
+    {
+        MetricNone,
+        "CPU Temperature", "CPU Usage", "CPU Load", "CPU Speed Average", "CPU Voltage",
+        "GPU Temperature", "GPU Usage", "GPU Load", "GPU Speed", "GPU Frequency",
+        "GPU Power", "GPU Voltage",
+        "Memory Frequency", "Motherboard Temperature", "Date&Time",
+        "Fan Speed AIO Pump", "Fan Speed CPU Fan",
+    };
+
+    public System.Collections.ObjectModel.ObservableCollection<string> MetricOptions { get; } = new();
+    public IReadOnlyList<MetricSlot> MetricSlots { get; private set; } = Array.Empty<MetricSlot>();
+
+    private SystemMetricsService? _metrics;
+    private System.Threading.Timer? _metricsTimer;
+    private int _metricsBusy;
+    private int _metricsSendFailures;
+    private System.Windows.Threading.DispatcherTimer? _slotPushDebounce;
+
+    public bool MetricsEnabled
+    {
+        get => _settings.MetricsEnabled;
+        set
+        {
+            if (_settings.MetricsEnabled == value) return;
+            _settings.MetricsEnabled = value;
+            SaveSettings();
+            OnPropertyChanged();
+            UpdateMetricsStreaming();
+            PushScreenConfig();   // show/hide the widgets immediately
+        }
+    }
+
+    public string MetricsAccessNote =>
+        SystemMetricsService.HasKernelSensorAccess
+            ? ""
+            : "Running without administrator rights: CPU temperature/voltage, motherboard " +
+              "temperature and fan speeds read 0. Loads, GPU, memory, disk and network still work. " +
+              "Run the app as administrator for the full set.";
+
+    public bool ShowMetricsAccessNote => !SystemMetricsService.HasKernelSensorAccess;
+
+    private void InitializeMetrics()
+    {
+        foreach (var option in MetricVocabulary) MetricOptions.Add(option);
+
+        var slots = new List<MetricSlot>(6);
+        for (int i = 0; i < 6; i++)
+        {
+            string saved = i < _settings.MetricSlots.Length ? _settings.MetricSlots[i] : "";
+            string selected = string.IsNullOrWhiteSpace(saved) ? MetricNone : saved;
+            if (!MetricOptions.Contains(selected)) MetricOptions.Add(selected);
+            slots.Add(new MetricSlot(i + 1, selected, OnMetricSlotChanged));
+        }
+        MetricSlots = slots;
+
+        UpdateMetricsStreaming();
+    }
+
+    private void OnMetricSlotChanged()
+    {
+        _settings.MetricSlots = MetricSlots
+            .Select(s => s.Selected == MetricNone ? "" : s.Selected)
+            .ToArray();
+        SaveSettings();
+
+        // Debounce: picking six metrics shouldn't fire six config pushes at the panel.
+        if (_slotPushDebounce is null)
+        {
+            _slotPushDebounce = new System.Windows.Threading.DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(1500),
+            };
+            _slotPushDebounce.Tick += (_, _) => { _slotPushDebounce!.Stop(); PushScreenConfig(); };
+        }
+        _slotPushDebounce.Stop();
+        _slotPushDebounce.Start();
+    }
+
+    /// <summary>The sysinfoDisplay slots to send: the saved picks, or all-hidden when metrics are off.</summary>
+    private string[] EffectiveMetricSlots()
+        => _settings.MetricsEnabled ? _settings.MetricSlots : new[] { "", "", "", "", "", "" };
+
+    /// <summary>Re-send the screen config (video + widget slots) in the background.</summary>
+    private void PushScreenConfig()
+    {
+        string? video = _settings.PanelVideoFile;
+        if (string.IsNullOrWhiteSpace(video)) return;
+        string[] slots = EffectiveMetricSlots();
+        Task.Run(() =>
+        {
+            try { _backlight.SetPanelVideo(video, slots); }
+            catch (Exception ex) { _log.Warning(ex, "Pushing the screen config failed."); }
+        });
+    }
+
+    private void UpdateMetricsStreaming()
+    {
+        if (_settings.MetricsEnabled && _metricsTimer is null)
+        {
+            _metricsTimer = new System.Threading.Timer(MetricsTick, null,
+                TimeSpan.Zero, TimeSpan.FromSeconds(3));
+            _log.Information("Metrics streaming ON (STATE 'all' snapshot every 3s).");
+        }
+        else if (!_settings.MetricsEnabled && _metricsTimer is not null)
+        {
+            _metricsTimer.Dispose();
+            _metricsTimer = null;
+            _log.Information("Metrics streaming OFF.");
+        }
+    }
+
+    private void MetricsTick(object? _)
+    {
+        if (Interlocked.Exchange(ref _metricsBusy, 1) == 1) return;
+        try
+        {
+            if (!MetricsEnabled || !CanControlDevice) return;
+
+            if (_metrics is null)
+            {
+                _metrics = new SystemMetricsService(_log);
+                if (_metrics.EnsureOpen())
+                    AddDiscoveredFanOptions(_metrics.GetFanNames());
+            }
+            if (!_metrics.EnsureOpen()) return;
+
+            string? json = _metrics.BuildAllJson();
+            if (json is null) return;
+
+            var (ok, msg) = _backlight.SendSysinfo(json);
+            if (ok)
+            {
+                if (_metricsSendFailures > 0)
+                {
+                    _log.Information("Metrics stream recovered after {Count} failed send(s).", _metricsSendFailures);
+                    _metricsSendFailures = 0;
+                }
+            }
+            else
+            {
+                int n = ++_metricsSendFailures;
+                if (n == 1 || n % 100 == 0)
+                    _log.Warning("Metrics send failing ({Count} consecutive): {Msg}", n, msg);
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.Warning(ex, "Metrics tick failed (will retry next interval).");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _metricsBusy, 0);
+        }
+    }
+
+    private void AddDiscoveredFanOptions(IReadOnlyList<string> fanNames)
+    {
+        if (fanNames.Count == 0) return;
+        var app = Application.Current;
+        if (app is null) return;
+        app.Dispatcher.BeginInvoke(() =>
+        {
+            foreach (var name in fanNames)
+            {
+                string option = "Fan Speed " + name;
+                if (!MetricOptions.Contains(option)) MetricOptions.Add(option);
+            }
+        });
     }
 
     // ---------------------------------------------------------------- session re-assert
@@ -566,9 +769,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 string? video = _settings.PanelVideoFile;
                 if (!string.IsNullOrWhiteSpace(video))
                 {
-                    _log.Information("Session opened — re-asserting panel video {File} and {Percent}% brightness.",
+                    _log.Information("Session opened — re-asserting panel video {File}, metric slots and {Percent}% brightness.",
                         video, BrightnessPercent);
-                    _backlight.SetPanelVideo(video);
+                    _backlight.SetPanelVideo(video, EffectiveMetricSlots());
                 }
                 _backlight.SetPercent(BrightnessPercent, quiet: true);
             }
@@ -795,6 +998,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public void Dispose()
     {
+        _metricsTimer?.Dispose();
+        _metricsTimer = null;
+        _metrics?.Dispose();
+        _metrics = null;
+        _slotPushDebounce?.Stop();
+        _slotPushDebounce = null;
         _backlight.SessionOpened -= OnSessionOpened;
         _backlight.DeviceListChanged -= OnDeviceListChanged;
         _deviceChangeDebounce?.Stop();

@@ -45,13 +45,14 @@ public sealed class MediaService
     /// </summary>
     public async Task<(bool Ok, string Message, string? DeviceFileName)> SetPanelVideoAsync(
         string sourceVideoPath, VideoScaleMode scaleMode = VideoScaleMode.Fill,
-        IProgress<string>? progress = null, CancellationToken ct = default)
+        string?[]? sysinfoDisplay = null, IProgress<string>? progress = null, CancellationToken ct = default)
     {
-        return await Task.Run(() => SetPanelVideo(sourceVideoPath, scaleMode, progress, ct), ct);
+        return await Task.Run(() => SetPanelVideo(sourceVideoPath, scaleMode, sysinfoDisplay, progress, ct), ct);
     }
 
     private (bool Ok, string Message, string? DeviceFileName) SetPanelVideo(
-        string sourceVideoPath, VideoScaleMode scaleMode, IProgress<string>? progress, CancellationToken ct)
+        string sourceVideoPath, VideoScaleMode scaleMode, string?[]? sysinfoDisplay,
+        IProgress<string>? progress, CancellationToken ct)
     {
         try
         {
@@ -87,7 +88,7 @@ public sealed class MediaService
                 // 3) Activate over HID ----------------------------------------------
                 progress?.Report("Activating…");
                 ct.ThrowIfCancellationRequested();
-                var (aOk, aMsg) = _backlight.SetPanelVideo(deviceName);
+                var (aOk, aMsg) = _backlight.SetPanelVideo(deviceName, sysinfoDisplay);
                 if (!aOk) return (false, aMsg, null);
 
                 progress?.Report("Done — the panel is now playing your video.");

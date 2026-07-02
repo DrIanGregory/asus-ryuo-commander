@@ -43,6 +43,20 @@ public sealed class AppSettings
     [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter))]
     public VideoScaleMode VideoScaleMode { get; set; } = VideoScaleMode.Fill;
 
+    // --- Metrics ---
+    /// <summary>Stream live system metrics to the panel (the STATE 'all' telemetry Info Hub sends).</summary>
+    public bool MetricsEnabled { get; set; }
+
+    /// <summary>
+    /// The six metric widget slots shown over the panel content (sysinfoDisplay tokens, e.g.
+    /// "CPU Temperature", "Fan Speed AIO Pump", "Date&amp;Time"; empty = slot hidden).
+    /// </summary>
+    public string[] MetricSlots { get; set; } =
+    {
+        "CPU Temperature", "GPU Temperature", "CPU Usage",
+        "Fan Speed AIO Pump", "Motherboard Temperature", "Date&Time",
+    };
+
     // --- Diagnostics ---
     /// <summary>
     /// When true, the logger captures full verbose/debug detail (adb command lines,

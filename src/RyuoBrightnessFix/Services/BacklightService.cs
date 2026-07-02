@@ -150,17 +150,25 @@ public sealed class BacklightService : IDisposable
     /// Make the panel play a video file already present in <c>/sdcard/pcMedia</c> (or one of
     /// the stock presets in <c>/sdcard/pcMediaPreset</c> — the firmware resolves preset names
     /// itself). Sends the same <c>waterBlockScreenId</c> config Info Hub uses: id=Customization,
-    /// Full Screen, single-loop, the given file.
+    /// Full Screen, single-loop, the given file. <paramref name="sysinfoDisplay"/> fills the
+    /// six metric widget slots (tokens like "CPU Temperature", "Fan Speed AIO Pump",
+    /// "Date&amp;Time"); null/empty slots hide the widget. The values behind the widgets come
+    /// from the <c>STATE all</c> telemetry stream (<see cref="SendSysinfo"/>).
     /// </summary>
-    public (bool Ok, string Message) SetPanelVideo(string deviceFileName)
+    public (bool Ok, string Message) SetPanelVideo(string deviceFileName, string?[]? sysinfoDisplay = null)
     {
+        var slots = new string?[6];
+        if (sysinfoDisplay is not null)
+            for (int i = 0; i < Math.Min(6, sysinfoDisplay.Length); i++) slots[i] = sysinfoDisplay[i];
+        string slotsJson = string.Join(",", slots.Select(s => JsonString(s ?? "")));
+
         // Matches the captured Info Hub message exactly (id "Customization" + CamelCase playMode).
         string body =
             "{\"id\":\"Customization\",\"screenMode\":\"Full Screen\",\"playMode\":\"Single\"," +
             "\"media\":[" + JsonString(deviceFileName) + "]," +
             "\"settings\":{\"titleColor\":\"#25cfe5\",\"contentColor\":\"#25cfe5\"," +
             "\"filter\":{\"value\":null,\"opacity\":100},\"badges\":[]}," +
-            "\"sysinfoDisplay\":[\"\",\"\",\"\",\"\",\"\",\"\"]}";
+            "\"sysinfoDisplay\":[" + slotsJson + "]}";
 
         // The device re-asserts its persisted config every few seconds, so a single send can
         // lose the race. Assert a few times (fresh SeqNumber each) to reliably take over.
@@ -179,6 +187,21 @@ public sealed class BacklightService : IDisposable
         }
         _log.Error("Panel video set failed ({File}): {Msg}", deviceFileName, last.Message);
         return last;
+    }
+
+    /// <summary>
+    /// Stream one live sysinfo snapshot to the panel — the <c>STATE all 1</c> message Info Hub
+    /// sends every few seconds. The panel's metric widgets (configured via
+    /// <see cref="SetPanelVideo"/>'s sysinfoDisplay slots) render these values. Quiet: logs at
+    /// Debug only, since it runs on a timer.
+    /// </summary>
+    public (bool Ok, string Message) SendSysinfo(string allJson)
+    {
+        int seq = Interlocked.Increment(ref _seq) & 0x7FFFFFFF;
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var (ok, msg) = SendFrame(BuildStateFrame("all", allJson, seq, now), "sysinfo");
+        if (ok) _log.Debug("Sysinfo snapshot streamed ({Bytes} bytes).", allJson.Length);
+        return (ok, msg);
     }
 
     /// <summary>
@@ -410,11 +433,23 @@ public sealed class BacklightService : IDisposable
 
     /// <summary>Build a framed <c>POST &lt;cmdType&gt;</c> message with a JSON body.</summary>
     internal static byte[] BuildFrame(string cmdType, string body, int seq)
+        => BuildFrameCore("POST", cmdType, "1.0", body, seq, null);
+
+    /// <summary>
+    /// Build a framed <c>STATE &lt;cmdType&gt;</c> message — the telemetry variant Info Hub
+    /// uses for the live sysinfo stream (<c>STATE all 1</c> + a <c>Date</c> header).
+    /// </summary>
+    internal static byte[] BuildStateFrame(string cmdType, string body, int seq, long unixMillis)
+        => BuildFrameCore("STATE", cmdType, "1", body, seq, unixMillis);
+
+    private static byte[] BuildFrameCore(
+        string requestState, string cmdType, string version, string body, int seq, long? dateMillis)
     {
         int contentLength = Encoding.UTF8.GetByteCount(body);
         string text =
-            "POST " + cmdType + " 1.0\r\n" +
+            requestState + " " + cmdType + " " + version + "\r\n" +
             "SeqNumber=" + seq + "\r\n" +
+            (dateMillis is long d ? "Date=" + d + "\r\n" : "") +
             "ContentType=json\r\n" +
             "ContentLength=" + contentLength + "\r\n" +
             "\r\n" +

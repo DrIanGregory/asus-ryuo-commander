@@ -144,4 +144,27 @@ public partial class MainWindow : Window
         // Keep the newest log line in view.
         LogTextBox.ScrollToEnd();
     }
+
+    // ---------------------------------------------------------------- video preview
+
+    private void PreviewPlayer_MediaOpened(object sender, RoutedEventArgs e)
+    {
+        PreviewError.Visibility = Visibility.Collapsed;
+    }
+
+    private void PreviewPlayer_MediaEnded(object sender, RoutedEventArgs e)
+    {
+        // Loop the preview like the panel loops the real video.
+        PreviewPlayer.Position = TimeSpan.Zero;
+        PreviewPlayer.Play();
+    }
+
+    private void PreviewPlayer_MediaFailed(object? sender, ExceptionRoutedEventArgs e)
+    {
+        // The source hasn't been transcoded yet, so exotic codecs may not preview —
+        // the panel upload can still succeed (ffmpeg handles far more than WPF does).
+        PreviewError.Text = "Preview unavailable for this file (" + e.ErrorException.Message +
+                            "). The video can still be set — ffmpeg supports more formats than the preview does.";
+        PreviewError.Visibility = Visibility.Visible;
+    }
 }

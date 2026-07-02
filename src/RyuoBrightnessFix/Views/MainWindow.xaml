@@ -1,6 +1,7 @@
 <Window x:Class="RyuoBrightnessFix.Views.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:views="clr-namespace:RyuoBrightnessFix.Views"
         Title="Ryuo Brightness Fix"
         Icon="/Resources/Icons/app.ico"
         Width="490" Height="560"
@@ -12,6 +13,7 @@
 
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <views:ScaleModeToStretchConverter x:Key="ScaleModeToStretch" />
     </Window.Resources>
 
     <Grid Margin="18,18,18,0">
@@ -105,6 +107,33 @@
                             <TextBlock Text="{Binding VideoScaleModeDescription}"
                                        Style="{StaticResource SubtleText}" TextWrapping="Wrap"
                                        Margin="0,6,0,0" />
+
+                            <!-- LCD preview: the panel's exact shape (2240:1080), showing the
+                                 chosen video with the selected scale mode applied — what you
+                                 see here is what the cooler will show. -->
+                            <StackPanel Visibility="{Binding HasSelectedVideo, Converter={StaticResource BoolToVis}}"
+                                        Margin="0,14,0,0">
+                                <TextBlock Text="LCD preview" Style="{StaticResource SubtleText}" Margin="0,0,0,6" />
+                                <Viewbox Stretch="Uniform" HorizontalAlignment="Left">
+                                    <Border Width="415" Height="200" Background="Black"
+                                            BorderBrush="{StaticResource BorderBrush}" BorderThickness="2"
+                                            CornerRadius="6">
+                                        <Border.Clip>
+                                            <RectangleGeometry Rect="0,0,411,196" RadiusX="5" RadiusY="5" />
+                                        </Border.Clip>
+                                        <MediaElement x:Name="PreviewPlayer"
+                                                      Source="{Binding SelectedVideoPath}"
+                                                      LoadedBehavior="Play" UnloadedBehavior="Stop"
+                                                      IsMuted="True"
+                                                      Stretch="{Binding SelectedVideoScaleMode, Converter={StaticResource ScaleModeToStretch}}"
+                                                      MediaOpened="PreviewPlayer_MediaOpened"
+                                                      MediaEnded="PreviewPlayer_MediaEnded"
+                                                      MediaFailed="PreviewPlayer_MediaFailed" />
+                                    </Border>
+                                </Viewbox>
+                                <TextBlock x:Name="PreviewError" Style="{StaticResource SubtleText}"
+                                           TextWrapping="Wrap" Margin="0,4,0,0" Visibility="Collapsed" />
+                            </StackPanel>
                             <Button Content="Set as panel video" Style="{StaticResource AccentButton}"
                                     Command="{Binding SetVideoCommand}" Width="180" HorizontalAlignment="Left"
                                     Margin="0,12,0,0" />
@@ -118,6 +147,48 @@
                     <Border Style="{StaticResource Card}">
                         <TextBlock Style="{StaticResource SubtleText}" TextWrapping="Wrap"
                                    Text="Transcodes your video to the panel's playable format (1920×960 — its decoder's limit, same as ASUS's stock videos), uploads it, and loops it full-screen — the same path ASUS Info Hub uses (no Info Hub needed). Needs ffmpeg (bundled) and ASUS's adb. The panel forgets its content when it reboots; the app re-asserts this video automatically every time it reconnects, so the screen never sits black. Note: at 100% brightness a dark video still looks dim — that's the footage, not the backlight." />
+                    </Border>
+                </StackPanel>
+            </TabItem>
+
+            <!-- ================= METRICS ================= -->
+            <TabItem Header="Metrics">
+                <StackPanel>
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel>
+                            <TextBlock Text="On-screen Metrics" Style="{StaticResource HeaderText}" />
+                            <CheckBox Content="Show live system metrics on the LCD"
+                                      IsChecked="{Binding MetricsEnabled}" />
+                            <TextBlock Text="{Binding MetricsAccessNote}" Style="{StaticResource SubtleText}"
+                                       TextWrapping="Wrap" Margin="0,4,0,0"
+                                       Visibility="{Binding ShowMetricsAccessNote, Converter={StaticResource BoolToVis}}" />
+                            <ItemsControl ItemsSource="{Binding MetricSlots}" Margin="0,10,0,0"
+                                          IsEnabled="{Binding MetricsEnabled}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <UniformGrid Columns="2" />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal" Margin="0,4">
+                                            <TextBlock Text="{Binding Number, StringFormat=Slot {0}:}"
+                                                       Style="{StaticResource SubtleText}" Width="46"
+                                                       VerticalAlignment="Center" />
+                                            <ComboBox Width="165"
+                                                      ItemsSource="{Binding DataContext.MetricOptions,
+                                                                    RelativeSource={RelativeSource AncestorType=Window}}"
+                                                      SelectedItem="{Binding Selected, Mode=TwoWay}" />
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource Card}">
+                        <TextBlock Style="{StaticResource SubtleText}" TextWrapping="Wrap"
+                                   Text="Overlays up to six live widgets on the panel (temperatures, loads, fan speeds, clock) — the same telemetry ASUS Info Hub streams, without Info Hub. Values refresh every 3 seconds while the app runs. The slot layout is stored on the panel and re-asserted automatically with the video. Fan entries are discovered from your motherboard's headers once streaming starts." />
                     </Border>
                 </StackPanel>
             </TabItem>
