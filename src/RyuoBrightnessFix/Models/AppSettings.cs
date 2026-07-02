@@ -38,6 +38,11 @@ public sealed class AppSettings
     /// </summary>
     public string? PanelVideoFile { get; set; } = "RYUO_IV_HW_Info_01.mp4";
 
+    /// <summary>How to fit a source video into the panel frame when setting a new video.
+    /// Fill = crop to cover the screen (default), Fit = letterbox, Stretch = distort.</summary>
+    [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter))]
+    public VideoScaleMode VideoScaleMode { get; set; } = VideoScaleMode.Fill;
+
     // --- Diagnostics ---
     /// <summary>
     /// When true, the logger captures full verbose/debug detail (adb command lines,

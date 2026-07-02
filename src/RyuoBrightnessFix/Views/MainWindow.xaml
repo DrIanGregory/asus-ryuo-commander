@@ -95,6 +95,16 @@
                                            Margin="12,0,0,0" Style="{StaticResource SubtleText}"
                                            TextTrimming="CharacterEllipsis" />
                             </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                                <TextBlock Text="Scale mode:" VerticalAlignment="Center"
+                                           Style="{StaticResource SubtleText}" />
+                                <ComboBox ItemsSource="{Binding VideoScaleModes}"
+                                          SelectedItem="{Binding SelectedVideoScaleMode, Mode=TwoWay}"
+                                          Width="130" Margin="10,0,0,0" VerticalAlignment="Center" />
+                                <TextBlock Text="Fill = crop to cover the screen · Fit = bars · Stretch = distort"
+                                           VerticalAlignment="Center" Margin="12,0,0,0"
+                                           Style="{StaticResource SubtleText}" />
+                            </StackPanel>
                             <Button Content="Set as panel video" Style="{StaticResource AccentButton}"
                                     Command="{Binding SetVideoCommand}" Width="180" HorizontalAlignment="Left"
                                     Margin="0,12,0,0" />

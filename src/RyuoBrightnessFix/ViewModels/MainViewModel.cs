@@ -438,6 +438,22 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private string _videoStatus = "";
     public string VideoStatus { get => _videoStatus; private set => SetProperty(ref _videoStatus, value); }
 
+    /// <summary>Choices for the scale-mode ComboBox.</summary>
+    public IReadOnlyList<VideoScaleMode> VideoScaleModes { get; } =
+        new[] { VideoScaleMode.Fill, VideoScaleMode.Fit, VideoScaleMode.Stretch };
+
+    public VideoScaleMode SelectedVideoScaleMode
+    {
+        get => _settings.VideoScaleMode;
+        set
+        {
+            if (_settings.VideoScaleMode == value) return;
+            _settings.VideoScaleMode = value;
+            SaveSettings();
+            OnPropertyChanged();
+        }
+    }
+
     public string ActiveVideoDisplay =>
         string.IsNullOrEmpty(_settings.PanelVideoFile)
             ? "No panel video configured."
@@ -485,7 +501,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         try
         {
             var progress = new Progress<string>(s => VideoStatus = s);
-            var (ok, msg, deviceName) = await _media.SetPanelVideoAsync(path, progress);
+            var (ok, msg, deviceName) = await _media.SetPanelVideoAsync(path, SelectedVideoScaleMode, progress);
             VideoStatus = msg;
             if (ok && deviceName is not null)
             {

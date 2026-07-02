@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.Versioning;
+using RyuoBrightnessFix.Models;
 using Serilog;
 
 namespace RyuoBrightnessFix.Services;
@@ -43,13 +44,14 @@ public sealed class MediaService
     /// be re-asserted when the panel forgets its screen config (it does, on every reboot).
     /// </summary>
     public async Task<(bool Ok, string Message, string? DeviceFileName)> SetPanelVideoAsync(
-        string sourceVideoPath, IProgress<string>? progress = null, CancellationToken ct = default)
+        string sourceVideoPath, VideoScaleMode scaleMode = VideoScaleMode.Fill,
+        IProgress<string>? progress = null, CancellationToken ct = default)
     {
-        return await Task.Run(() => SetPanelVideo(sourceVideoPath, progress, ct), ct);
+        return await Task.Run(() => SetPanelVideo(sourceVideoPath, scaleMode, progress, ct), ct);
     }
 
     private (bool Ok, string Message, string? DeviceFileName) SetPanelVideo(
-        string sourceVideoPath, IProgress<string>? progress, CancellationToken ct)
+        string sourceVideoPath, VideoScaleMode scaleMode, IProgress<string>? progress, CancellationToken ct)
     {
         try
         {
@@ -69,9 +71,9 @@ public sealed class MediaService
             string tempOut = Path.Combine(Path.GetTempPath(), "ryuo_" + deviceName);
 
             // 1) Transcode ------------------------------------------------------------
-            progress?.Report("Transcoding video to 2240×1080…");
+            progress?.Report($"Transcoding video ({scaleMode})…");
             ct.ThrowIfCancellationRequested();
-            var (tcOk, tcMsg) = Transcode(ffmpeg, sourceVideoPath, tempOut, ct);
+            var (tcOk, tcMsg) = Transcode(ffmpeg, sourceVideoPath, tempOut, scaleMode, ct);
             if (!tcOk) return (false, tcMsg, null);
 
             try
@@ -109,14 +111,24 @@ public sealed class MediaService
 
     // ---------------------------------------------------------------- steps
 
-    private (bool Ok, string Message) Transcode(string ffmpeg, string src, string dst, CancellationToken ct)
+    private (bool Ok, string Message) Transcode(
+        string ffmpeg, string src, string dst, VideoScaleMode scaleMode, CancellationToken ct)
     {
         // Target 1920×960 — the panel is 2240×1080 but its RK3562 hardware decoder rejects
         // anything wider than 1920 ("isCodecSupport error: support width = 1920" → black
         // screen). ASUS's own stock videos are 1920×960 H.264 High yuv420p 30fps and the
-        // HomeUI upscales to the screen; match that exactly.
-        string vf = "scale=1920:960:force_original_aspect_ratio=decrease," +
-                    "pad=1920:960:(ow-iw)/2:(oh-ih)/2:color=black,fps=30,format=yuv420p";
+        // panel stretches the received frame across the whole screen; match that exactly.
+        // The scale mode decides how the source lands in that frame — bars baked into the
+        // pixels (Fit) are the only reason a video ever shows smaller than the LCD.
+        string shape = scaleMode switch
+        {
+            VideoScaleMode.Fill => "scale=1920:960:force_original_aspect_ratio=increase," +
+                                   "crop=1920:960",
+            VideoScaleMode.Stretch => "scale=1920:960,setsar=1",
+            _ => "scale=1920:960:force_original_aspect_ratio=decrease," +
+                 "pad=1920:960:(ow-iw)/2:(oh-ih)/2:color=black",
+        };
+        string vf = shape + ",fps=30,format=yuv420p";
         var args = new[]
         {
             "-y", "-hide_banner", "-loglevel", "error",
