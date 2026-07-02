@@ -24,15 +24,14 @@ widgets (CPU/GPU temperature, CPU usage, AIO pump RPM, motherboard temperature, 
   seconds after the PC stops talking to it (that's the infamous "dims after sleep even though
   Armoury Crate says 100%"). The app keeps a live HID session with a read‑drain and re‑applies
   your level every 3 s.
-- **Plays your videos on the panel — a whole playlist of them.** Queue as many videos as you
-  like: each is transcoded to the panel's playable format, uploaded, and the panel itself
-  rotates through them full‑screen (one video loops; multiple rotate shuffled — the
-  firmware's only multi‑video mode). Reorder or remove entries any time. Choose the
-  **scale mode** per upload: *Fill* (crop to cover the screen, default), *Fit* (letterbox),
-  or *Stretch*. The Video tab embeds an **LCD‑shaped screen** that always shows **what the
-  panel is playing right now** (or the highlighted playlist entry), and switches to a live
-  preview of the file you're choosing — with the selected scale mode applied — so you see
-  exactly how the cooler will render it before uploading.
+- **Plays your videos on the panel — a whole media library of them.** The Video tab is an
+  Info Hub‑style editor: an **LCD‑shaped screen playing what the panel shows right now**, a
+  **thumbnail media library strip** (Add / Remove / reorder), and the three play modes —
+  **Repeat one**, **Repeat all** (in order), **Shuffle** — all firmware‑native
+  (`Single`/`Cycle`/`Random`, dug out of Info Hub's own source and each verified live).
+  Every added video is transcoded to the panel's playable format with your chosen
+  **scale mode** (*Fill* = crop to cover, *Fit* = letterbox, *Stretch* = distort) and
+  uploaded; the panel itself rotates the list.
 - **Shows live system metrics on the panel.** Up to six widgets over the video (CPU/GPU
   temperature, loads, clocks, fan/pump RPM, motherboard temperature, clock) — the same
   telemetry Info Hub streams, reverse‑engineered (`STATE all` snapshots every 3 s) and fed
@@ -121,9 +120,10 @@ ContentLength=<len(body)>\r\n
   "sysinfoDisplay":["<slot1>",…,"<slot6>"],…}`
   makes the home‑UI play the `media` playlist full‑screen (files in `/sdcard/pcMedia`; stock
   preset names from `/sdcard/pcMediaPreset` also resolve) and configures the six metric
-  widget slots. `playMode` (verified live): **`Single` loops the *first* entry only — it
-  never advances**; **`Random` rotates through the whole list shuffled**. Those are the only
-  two modes in the firmware, so multi‑video playlists are always shuffled. Valid slot
+  widget slots. `playMode` (the enum from Info Hub's own source, each verified live):
+  **`Single`** loops the *first* entry only, **`Cycle`** plays the list in order, and
+  **`Random`** shuffles. The widget text colors ride in `settings.titleColor` /
+  `settings.contentColor`. Valid slot
   tokens (extracted from the HomeUI apk): `CPU Temperature/Usage/Load/Speed Average/Voltage`,
   `GPU Temperature/Usage/Load/Speed/Frequency/Power/Voltage`, `Memory Frequency`,
   `Motherboard Temperature`, `Date&Time`, `Fan Speed <fan name>`. Empty string hides a slot.
@@ -178,19 +178,21 @@ ASUS's stock videos. Wider than 1920 is rejected by the hardware decoder (black 
    **"Hold brightness"** ticked (default) — this opens the HID session, drains the device
    stream, and re‑applies your level so the panel doesn't dim itself.
    **"Restore this brightness after waking"** re‑applies promptly on resume.
-3. **Video** tab: **Choose video…**, pick a **Scale mode** (*Fill* crops to cover the whole
-   screen — no bars; *Fit* letterboxes; *Stretch* distorts), check the **LCD preview**
-   (the panel's exact shape, with your scale mode applied live), then **Add to panel
-   playlist**. Add as many as you like — one video loops, several rotate (shuffled by the
-   firmware); reorder or remove entries with the playlist controls. The playlist is
-   remembered and re‑asserted automatically whenever the panel reconnects.
-   Tip: at 100% brightness a dark video still looks dim — that's the footage, not the
-   backlight.
-4. **Metrics** tab: tick **Show live system metrics on the LCD** and pick up to six widgets
-   (temperatures, loads, fan/pump speeds, clock). Values refresh every 3 s while the app
-   runs; the slot layout rides along with the video config and survives panel reboots. Run
-   the app as administrator for CPU temperature and fan RPMs.
-5. **Settings** tab: **Start with Windows**, **Start minimized**, **Show tray icon** to run
+3. **Video** tab — the whole panel editor on one screen:
+   - The **LCD screen** at the top plays whichever media‑library entry is highlighted —
+     exactly what the cooler shows.
+   - Pick a play mode under it: **Repeat one** (loop the selected video), **Repeat all**
+     (in order), or **Shuffle**.
+   - **Media library**: **Add** transcodes + uploads a video (with the chosen *Fill* /
+     *Fit* / *Stretch* scale mode) and it joins the thumbnail strip; **Remove** and ◀ ▶
+     manage the queue. The library is remembered and re‑asserted automatically whenever
+     the panel reconnects. Tip: at 100% brightness a dark video still looks dim — that's
+     the footage, not the backlight.
+   - **On‑screen metrics**: tick the toggle and light up to six chips (temperatures, loads,
+     fan/pump speeds, clock), grouped Info Hub‑style, plus title/content text colors.
+     Values refresh every 3 s while the app runs. Run the app as administrator for CPU
+     temperature and fan RPMs.
+4. **Settings** tab: **Start with Windows**, **Start minimized**, **Show tray icon** to run
    silently from the tray; verbose logging and the activity pane for diagnostics.
 
 The header shows the live state with a green **Connected** badge; the status bar shows the

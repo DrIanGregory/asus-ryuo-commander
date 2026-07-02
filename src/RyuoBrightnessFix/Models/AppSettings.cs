@@ -42,8 +42,15 @@ public sealed class AppSettings
     /// </summary>
     public List<string> PanelVideoFiles { get; set; } = new() { "RYUO_IV_HW_Info_01.mp4" };
 
-    /// <summary>Playlist order: "Single" plays the list in order; "Random" shuffles.</summary>
-    public string PanelPlayMode { get; set; } = "Single";
+    /// <summary>Playlist mode (firmware enum, from Info Hub's source): "Single" loops the
+    /// first entry, "Cycle" plays the list in order, "Random" shuffles.</summary>
+    public string PanelPlayMode { get; set; } = "Cycle";
+
+    /// <summary>Metric widget title color (hex), part of the panel screen config.</summary>
+    public string MetricTitleColor { get; set; } = "#25cfe5";
+
+    /// <summary>Metric widget value color (hex), part of the panel screen config.</summary>
+    public string MetricContentColor { get; set; } = "#25cfe5";
 
     /// <summary>How to fit a source video into the panel frame when setting a new video.
     /// Fill = crop to cover the screen (default), Fit = letterbox, Stretch = distort.</summary>

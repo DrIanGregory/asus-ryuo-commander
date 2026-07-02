@@ -61,6 +61,47 @@
         </Style.Triggers>
     </Style>
 
+    <!-- Toggle used for the play-mode buttons (repeat one / repeat all / shuffle)
+         and, in its Chip variant, the metric widget chips. -->
+    <Style x:Key="ModeToggle" TargetType="ToggleButton">
+        <Setter Property="Foreground" Value="{StaticResource SubtleForegroundBrush}" />
+        <Setter Property="Background" Value="#FF2A2A30" />
+        <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+        <Setter Property="FontSize" Value="12" />
+        <Setter Property="Padding" Value="10,5" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ToggleButton">
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="1" CornerRadius="4"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+            <Trigger Property="IsChecked" Value="True">
+                <Setter Property="Background" Value="#FF1E3A5F" />
+                <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                <Setter Property="Foreground" Value="{StaticResource ForegroundBrush}" />
+            </Trigger>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Foreground" Value="{StaticResource ForegroundBrush}" />
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Foreground" Value="{StaticResource DisabledBrush}" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="ChipToggle" TargetType="ToggleButton" BasedOn="{StaticResource ModeToggle}">
+        <Setter Property="Padding" Value="8,3" />
+        <Setter Property="Margin" Value="0,4,6,0" />
+    </Style>
+
     <!-- ========================= Card container ========================= -->
     <Style x:Key="Card" TargetType="Border">
         <Setter Property="Background" Value="{StaticResource CardBackgroundBrush}" />

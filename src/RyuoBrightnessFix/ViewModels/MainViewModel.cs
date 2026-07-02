@@ -53,7 +53,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public RelayCommand OpenLogsFolderCommand { get; }
     public RelayCommand CopyVersionCommand { get; }
     public RelayCommand ChooseVideoCommand { get; }
-    public RelayCommand SetVideoCommand { get; }
     public RelayCommand RemoveVideoCommand { get; }
     public RelayCommand MoveVideoUpCommand { get; }
     public RelayCommand MoveVideoDownCommand { get; }
@@ -84,12 +83,16 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         ReloadCommand = new RelayCommand(RefreshDevice);
         OpenLogsFolderCommand = new RelayCommand(OpenLogsFolder);
         CopyVersionCommand = new RelayCommand(CopyVersionToClipboard);
-        ChooseVideoCommand = new RelayCommand(ChooseVideo, () => !VideoBusy);
-        SetVideoCommand = new RelayCommand(SetVideo, () => CanSetVideo);
+        ChooseVideoCommand = new RelayCommand(AddVideo, () => !VideoBusy);
         RemoveVideoCommand = new RelayCommand(RemovePlaylistItem, () => SelectedPlaylistItem is not null && !VideoBusy);
         MoveVideoUpCommand = new RelayCommand(() => MovePlaylistItem(-1), () => CanMovePlaylistItem(-1));
         MoveVideoDownCommand = new RelayCommand(() => MovePlaylistItem(+1), () => CanMovePlaylistItem(+1));
-        foreach (var f in settings.PanelVideoFiles) Playlist.Add(f);
+        foreach (var f in settings.PanelVideoFiles)
+        {
+            var item = new PlaylistItem(f);
+            Playlist.Add(item);
+            LoadThumbnail(item);
+        }
 
         uiSink.LineWritten += OnLogLine;
         _backlight.DeviceListChanged += OnDeviceListChanged;
@@ -101,7 +104,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         InitializeMetrics();
         RefreshDevice();
-        LoadActiveVideoPreview();
+        LoadPreviewVideo();
         RefreshStartupModeNote();
     }
 
@@ -282,8 +285,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             {
                 ApplyBrightnessCommand.RaiseCanExecuteChanged();
                 Restore100Command.RaiseCanExecuteChanged();
-                SetVideoCommand.RaiseCanExecuteChanged();
-                OnPropertyChanged(nameof(CanSetVideo));
             }
         }
     }
@@ -444,75 +445,72 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    // ---------------------------------------------------------------- panel video
+    // ---------------------------------------------------------------- panel video / media library
 
-    private string? _selectedVideoPath;
-    public string? SelectedVideoPath
+    /// <summary>One entry in the media library strip: an on-device video + its thumbnail.</summary>
+    public sealed class PlaylistItem : ObservableObject
     {
-        get => _selectedVideoPath;
-        private set
+        public PlaylistItem(string file) => File = file;
+
+        /// <summary>Device-side file name (pcMedia, or a stock preset name).</summary>
+        public string File { get; }
+
+        private string? _thumbnail;
+        /// <summary>Local PNG path for the strip; null while extraction is pending.</summary>
+        public string? Thumbnail
         {
-            if (SetProperty(ref _selectedVideoPath, value))
+            get => _thumbnail;
+            set => SetProperty(ref _thumbnail, value);
+        }
+    }
+
+    public System.Collections.ObjectModel.ObservableCollection<PlaylistItem> Playlist { get; } = new();
+
+    private PlaylistItem? _selectedPlaylistItem;
+    public PlaylistItem? SelectedPlaylistItem
+    {
+        get => _selectedPlaylistItem;
+        set
+        {
+            if (SetProperty(ref _selectedPlaylistItem, value))
             {
-                OnPropertyChanged(nameof(SelectedVideoName));
-                OnPropertyChanged(nameof(HasSelectedVideo));
-                SetVideoCommand.RaiseCanExecuteChanged();
+                RemoveVideoCommand.RaiseCanExecuteChanged();
+                MoveVideoUpCommand.RaiseCanExecuteChanged();
+                MoveVideoDownCommand.RaiseCanExecuteChanged();
                 RaisePreviewChanged();
+                LoadPreviewVideo();
+                if (IsRepeatOne) ApplyPlaylist();   // repeat-one follows the selection
             }
         }
     }
 
-    public bool HasSelectedVideo => !string.IsNullOrEmpty(_selectedVideoPath);
-
     // ------------------------------------------------ the LCD screen preview
 
-    private string? _activeVideoLocalPath;
-    /// <summary>Local playable copy of the video the panel is looping right now.</summary>
-    public string? ActiveVideoLocalPath
+    private string? _previewLocalPath;
+    /// <summary>Local playable copy of the previewed playlist entry.</summary>
+    public string? PreviewSource
     {
-        get => _activeVideoLocalPath;
-        private set { if (SetProperty(ref _activeVideoLocalPath, value)) RaisePreviewChanged(); }
+        get => _previewLocalPath;
+        private set { if (SetProperty(ref _previewLocalPath, value)) RaisePreviewChanged(); }
     }
-
-    /// <summary>What the LCD mock shows: the file being chosen, else the active panel video.</summary>
-    public string? PreviewSource => SelectedVideoPath ?? ActiveVideoLocalPath;
 
     public bool HasPreview => PreviewSource is not null;
 
-    public string PreviewTitle => SelectedVideoPath is not null
-        ? $"LCD preview of the selected video — {SelectedVideoScaleMode} scale mode"
-        : Playlist.Count > 1 && SelectedPlaylistItem is not null
-            ? $"LCD preview — playlist entry: {SelectedPlaylistItem}"
-            : "Now playing on the LCD";
-
-    /// <summary>
-    /// How the preview stretches into the LCD frame. A file being chosen simulates the scale
-    /// mode that the transcode will bake in. The active video already has its mode baked into
-    /// its 1920×960 pixels, and the panel stretches that frame to cover the screen (cropping
-    /// ~3% of height) — UniformToFill reproduces exactly that.
-    /// </summary>
-    public System.Windows.Media.Stretch PreviewStretch => SelectedVideoPath is null
-        ? System.Windows.Media.Stretch.UniformToFill
-        : SelectedVideoScaleMode switch
-        {
-            VideoScaleMode.Fill => System.Windows.Media.Stretch.UniformToFill,
-            VideoScaleMode.Stretch => System.Windows.Media.Stretch.Fill,
-            _ => System.Windows.Media.Stretch.Uniform,
-        };
+    public string PreviewTitle => SelectedPlaylistItem is not null
+        ? $"LCD preview — {SelectedPlaylistItem.File}"
+        : "Now playing on the LCD";
 
     private void RaisePreviewChanged()
     {
-        OnPropertyChanged(nameof(PreviewSource));
         OnPropertyChanged(nameof(HasPreview));
         OnPropertyChanged(nameof(PreviewTitle));
-        OnPropertyChanged(nameof(PreviewStretch));
     }
 
     /// <summary>Fetch a local copy of a playlist video for the LCD mock (cache or adb pull):
-    /// the highlighted playlist entry, else the first one.</summary>
-    private void LoadActiveVideoPreview()
+    /// the highlighted entry, else the first one.</summary>
+    private void LoadPreviewVideo()
     {
-        string? file = SelectedPlaylistItem ?? Playlist.FirstOrDefault();
+        string? file = SelectedPlaylistItem?.File ?? Playlist.FirstOrDefault()?.File;
         if (string.IsNullOrWhiteSpace(file)) return;
         _ = Task.Run(async () =>
         {
@@ -520,7 +518,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             {
                 string? local = await _media.GetLocalCopyAsync(file);
                 if (local is null) return;
-                Application.Current?.Dispatcher.BeginInvoke(() => ActiveVideoLocalPath = local);
+                Application.Current?.Dispatcher.BeginInvoke(() => PreviewSource = local);
             }
             catch (Exception ex)
             {
@@ -529,8 +527,23 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         });
     }
 
-    public string SelectedVideoName =>
-        string.IsNullOrEmpty(_selectedVideoPath) ? "No video chosen" : Path.GetFileName(_selectedVideoPath);
+    private void LoadThumbnail(PlaylistItem item)
+    {
+        if (item.Thumbnail is not null) return;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                string? thumb = await _media.GetThumbnailAsync(item.File);
+                if (thumb is null) return;
+                Application.Current?.Dispatcher.BeginInvoke(() => item.Thumbnail = thumb);
+            }
+            catch (Exception ex)
+            {
+                _log.Debug(ex, "Thumbnail load for {File} failed.", item.File);
+            }
+        });
+    }
 
     private bool _videoBusy;
     public bool VideoBusy
@@ -541,7 +554,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             if (SetProperty(ref _videoBusy, value))
             {
                 ChooseVideoCommand.RaiseCanExecuteChanged();
-                SetVideoCommand.RaiseCanExecuteChanged();
+                RemoveVideoCommand.RaiseCanExecuteChanged();
+                MoveVideoUpCommand.RaiseCanExecuteChanged();
+                MoveVideoDownCommand.RaiseCanExecuteChanged();
             }
         }
     }
@@ -562,72 +577,82 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _settings.VideoScaleMode = value;
             SaveSettings();
             OnPropertyChanged();
-            OnPropertyChanged(nameof(VideoScaleModeDescription));
         }
     }
 
-    /// <summary>One-line explanation of the selected scale mode, shown under the ComboBox.</summary>
-    public string VideoScaleModeDescription => SelectedVideoScaleMode switch
+    // ------------------------------------------------ play mode (firmware enum, all verified live)
+
+    public bool IsRepeatOne
     {
-        VideoScaleMode.Fill => "Fill: scales the video up until it covers the whole screen, " +
-                               "cropping whatever overflows. No bars, no distortion.",
-        VideoScaleMode.Stretch => "Stretch: forces the video to the screen's shape. " +
-                                  "No bars, but the image is distorted.",
-        _ => "Fit: shows the whole video, with black bars where its shape differs from the screen.",
-    };
+        get => _settings.PanelPlayMode == "Single";
+        set { if (value) SetPlayMode("Single"); }
+    }
 
-    // ------------------------------------------------ playlist
-
-    public System.Collections.ObjectModel.ObservableCollection<string> Playlist { get; } = new();
-
-    private string? _selectedPlaylistItem;
-    public string? SelectedPlaylistItem
+    public bool IsRepeatAll
     {
-        get => _selectedPlaylistItem;
-        set
-        {
-            if (SetProperty(ref _selectedPlaylistItem, value))
-            {
-                RemoveVideoCommand.RaiseCanExecuteChanged();
-                MoveVideoUpCommand.RaiseCanExecuteChanged();
-                MoveVideoDownCommand.RaiseCanExecuteChanged();
-                RaisePreviewChanged();
-                LoadActiveVideoPreview();   // preview the highlighted playlist entry
-            }
-        }
+        get => _settings.PanelPlayMode == "Cycle";
+        set { if (value) SetPlayMode("Cycle"); }
+    }
+
+    public bool IsShuffle
+    {
+        get => _settings.PanelPlayMode == "Random";
+        set { if (value) SetPlayMode("Random"); }
+    }
+
+    private void SetPlayMode(string mode)
+    {
+        if (_settings.PanelPlayMode == mode) return;
+        _settings.PanelPlayMode = mode;
+        SaveSettings();
+        OnPropertyChanged(nameof(IsRepeatOne));
+        OnPropertyChanged(nameof(IsRepeatAll));
+        OnPropertyChanged(nameof(IsShuffle));
+        OnPropertyChanged(nameof(ActiveVideoDisplay));
+        ApplyPlaylist();
     }
 
     public string ActiveVideoDisplay => Playlist.Count switch
     {
-        0 => "Playlist is empty — the panel has nothing to show.",
-        1 => $"Playing on the LCD: {Playlist[0]} (looped, re-asserted automatically)",
-        _ => $"Playlist: {Playlist.Count} videos, rotated by the panel " +
-             "(shuffled — the firmware has no in-order mode). Re-asserted automatically.",
+        0 => "Media library is empty — the panel has nothing to show.",
+        1 => $"Playing on the LCD: {Playlist[0].File} (looped, re-asserted automatically)",
+        _ => _settings.PanelPlayMode switch
+        {
+            "Single" => $"{Playlist.Count} videos — repeating the selected one.",
+            "Random" => $"{Playlist.Count} videos — shuffled by the panel.",
+            _ => $"{Playlist.Count} videos — played in order by the panel.",
+        },
     };
 
-    /// <summary>"Single" loops one video; "Random" is the firmware's only multi-video rotation.</summary>
-    private string CurrentPlayMode => Playlist.Count > 1 ? "Random" : "Single";
+    // ------------------------------------------------ playlist operations
 
     private void SavePlaylist()
     {
-        _settings.PanelVideoFiles = Playlist.ToList();
-        _settings.PanelPlayMode = CurrentPlayMode;
+        _settings.PanelVideoFiles = Playlist.Select(p => p.File).ToList();
         SaveSettings();
         OnPropertyChanged(nameof(ActiveVideoDisplay));
     }
 
-    /// <summary>Send the whole playlist + widget slots to the panel in the background.</summary>
+    /// <summary>Send the whole playlist + widget slots + colors to the panel in the background.
+    /// In repeat-one mode the selected video is put first (the firmware loops the first entry).</summary>
     private void ApplyPlaylist()
     {
-        var files = Playlist.ToList();
+        var files = Playlist.Select(p => p.File).ToList();
         if (files.Count == 0) return;
-        string mode = CurrentPlayMode;
+        string mode = _settings.PanelPlayMode;
+        if (mode == "Single" && SelectedPlaylistItem is not null)
+        {
+            files.Remove(SelectedPlaylistItem.File);
+            files.Insert(0, SelectedPlaylistItem.File);
+        }
         string[] slots = EffectiveMetricSlots();
+        string title = _settings.MetricTitleColor;
+        string content = _settings.MetricContentColor;
         Task.Run(() =>
         {
             try
             {
-                var (ok, msg) = _backlight.SetPanelPlaylist(files, mode, slots);
+                var (ok, msg) = _backlight.SetPanelPlaylist(files, mode, slots, title, content);
                 if (!ok) _log.Warning("Applying the playlist failed: {Msg}", msg);
             }
             catch (Exception ex) { _log.Warning(ex, "Applying the playlist failed."); }
@@ -666,64 +691,54 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         ApplyPlaylist();
     }
 
-    public bool CanSetVideo =>
-        CanControlDevice && !VideoBusy && !string.IsNullOrEmpty(SelectedVideoPath);
-
-    private void ChooseVideo()
+    /// <summary>Info Hub-style Add: pick a file, transcode, upload, and it joins the library.</summary>
+    private async void AddVideo()
     {
-        var dlg = new Microsoft.Win32.OpenFileDialog
-        {
-            Title = "Choose a video for the Ryuo IV panel",
-            Filter = "Video files|*.mp4;*.mov;*.mkv;*.avi;*.webm;*.m4v;*.wmv|All files|*.*",
-            CheckFileExists = true,
-        };
-        if (dlg.ShowDialog() == true)
-        {
-            SelectedVideoPath = dlg.FileName;
-            VideoStatus = "";
-        }
-    }
-
-    private async void SetVideo()
-    {
-        if (!CanSetVideo) return;
-        var path = SelectedVideoPath!;
+        if (VideoBusy) return;
 
         if (!_media.FfmpegAvailable)
         {
             VideoStatus = "ffmpeg not found — see tools\\fetch-ffmpeg.ps1 (put ffmpeg.exe next to the app).";
-            _log.Warning("Set video aborted: ffmpeg not found.");
+            _log.Warning("Add video aborted: ffmpeg not found.");
             return;
         }
         if (!_media.AdbAvailable)
         {
             VideoStatus = "adb not found — install 'ASUS Info Hub - ROG RYUO IV'.";
-            _log.Warning("Set video aborted: adb not found.");
+            _log.Warning("Add video aborted: adb not found.");
             return;
         }
 
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Add a video to the panel's media library",
+            Filter = "Video files|*.mp4;*.mov;*.mkv;*.avi;*.webm;*.m4v;*.wmv|All files|*.*",
+            CheckFileExists = true,
+        };
+        if (dlg.ShowDialog() != true) return;
+        string path = dlg.FileName;
+
         VideoBusy = true;
         VideoStatus = "Starting…";
-        _log.Information("Setting panel video from {Path}", path);
+        _log.Information("Adding panel video from {Path}", path);
         try
         {
             var progress = new Progress<string>(s => VideoStatus = s);
             var (ok, msg, deviceName) = await _media.PrepareVideoAsync(path, SelectedVideoScaleMode, progress);
             if (ok && deviceName is not null)
             {
-                // Add to the playlist and activate it; persisted so it survives panel
-                // reboots (OnSessionOpened re-asserts the whole playlist on reconnect).
-                Playlist.Add(deviceName);
+                // Join the library and activate; persisted so it survives panel reboots
+                // (OnSessionOpened re-asserts the whole playlist on reconnect).
+                var item = new PlaylistItem(deviceName);
+                Playlist.Add(item);
+                LoadThumbnail(item);
                 SavePlaylist();
+                SelectedPlaylistItem = item;
                 ApplyPlaylist();
                 VideoStatus = Playlist.Count == 1
                     ? "The panel is now playing your video."
-                    : $"Added to the playlist ({Playlist.Count} videos — the panel rotates them).";
-                _log.Information("Playlist updated: {Msg}", msg);
-
-                // Flip the LCD mock to the new entry (the transcode is already in the cache).
-                SelectedVideoPath = null;
-                SelectedPlaylistItem = deviceName;
+                    : $"Added — {Playlist.Count} videos in the library.";
+                _log.Information("Media library updated: {Msg}", msg);
             }
             else
             {
@@ -734,7 +749,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         catch (Exception ex)
         {
             VideoStatus = "Error: " + ex.Message;
-            _log.Error(ex, "Unexpected error setting panel video.");
+            _log.Error(ex, "Unexpected error adding the panel video.");
         }
         finally
         {
@@ -742,45 +757,45 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    // ---------------------------------------------------------------- metrics
+    // ---------------------------------------------------------------- metrics (chips)
 
-    /// <summary>One of the six metric widget slots on the panel.</summary>
-    public sealed class MetricSlot : ObservableObject
+    /// <summary>A toggleable metric widget (Info Hub-style chip), grouped by category.</summary>
+    public sealed class MetricChip : ObservableObject
     {
-        private readonly Action _changed;
-        private string _selected;
+        private readonly Func<MetricChip, bool, bool> _toggle;
+        private bool _isSelected;
 
-        public MetricSlot(int number, string selected, Action changed)
+        public MetricChip(string token, string label, bool selected, Func<MetricChip, bool, bool> toggle)
         {
-            Number = number;
-            _selected = selected;
-            _changed = changed;
+            Token = token;
+            Label = label;
+            _isSelected = selected;
+            _toggle = toggle;
         }
 
-        public int Number { get; }
-        public string Selected
+        /// <summary>The sysinfoDisplay token the firmware understands.</summary>
+        public string Token { get; }
+        /// <summary>Short label inside its category group (e.g. "CPU" under "Temperature").</summary>
+        public string Label { get; }
+
+        public bool IsSelected
         {
-            get => _selected;
-            set { if (SetProperty(ref _selected, value)) _changed(); }
+            get => _isSelected;
+            set
+            {
+                if (_isSelected == value) return;
+                if (!_toggle(this, value)) { OnPropertyChanged(); return; }   // refused (6 max)
+                SetProperty(ref _isSelected, value);
+            }
         }
     }
 
-    private const string MetricNone = "(None)";
+    public sealed record MetricChipGroup(string Name, IReadOnlyList<MetricChip> Chips);
 
-    // The widget vocabulary the panel firmware understands (extracted from the HomeUI apk),
-    // plus "Fan Speed <header>" entries discovered from the motherboard once sensors open.
-    private static readonly string[] MetricVocabulary =
-    {
-        MetricNone,
-        "CPU Temperature", "CPU Usage", "CPU Load", "CPU Speed Average", "CPU Voltage",
-        "GPU Temperature", "GPU Usage", "GPU Load", "GPU Speed", "GPU Frequency",
-        "GPU Power", "GPU Voltage",
-        "Memory Frequency", "Motherboard Temperature", "Date&Time",
-        "Fan Speed AIO Pump", "Fan Speed CPU Fan",
-    };
+    public System.Collections.ObjectModel.ObservableCollection<MetricChipGroup> MetricGroups { get; } = new();
 
-    public System.Collections.ObjectModel.ObservableCollection<string> MetricOptions { get; } = new();
-    public IReadOnlyList<MetricSlot> MetricSlots { get; private set; } = Array.Empty<MetricSlot>();
+    // The active widgets in slot order (max 6 — the panel has six fixed regions).
+    private readonly List<string> _activeMetricTokens = new();
 
     private SystemMetricsService? _metrics;
     private System.Threading.Timer? _metricsTimer;
@@ -802,6 +817,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    private string _metricsStatus = "";
+    public string MetricsStatus { get => _metricsStatus; private set => SetProperty(ref _metricsStatus, value); }
+
     public string MetricsAccessNote =>
         SystemMetricsService.HasKernelSensorAccess
             ? ""
@@ -811,31 +829,90 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public bool ShowMetricsAccessNote => !SystemMetricsService.HasKernelSensorAccess;
 
+    public string MetricTitleColor
+    {
+        get => _settings.MetricTitleColor;
+        set
+        {
+            if (_settings.MetricTitleColor == value) return;
+            _settings.MetricTitleColor = value;
+            SaveSettings();
+            OnPropertyChanged();
+            DebouncedPushScreenConfig();
+        }
+    }
+
+    public string MetricContentColor
+    {
+        get => _settings.MetricContentColor;
+        set
+        {
+            if (_settings.MetricContentColor == value) return;
+            _settings.MetricContentColor = value;
+            SaveSettings();
+            OnPropertyChanged();
+            DebouncedPushScreenConfig();
+        }
+    }
+
     private void InitializeMetrics()
     {
-        foreach (var option in MetricVocabulary) MetricOptions.Add(option);
+        _activeMetricTokens.AddRange(_settings.MetricSlots.Where(s => !string.IsNullOrWhiteSpace(s)));
 
-        var slots = new List<MetricSlot>(6);
-        for (int i = 0; i < 6; i++)
-        {
-            string saved = i < _settings.MetricSlots.Length ? _settings.MetricSlots[i] : "";
-            string selected = string.IsNullOrWhiteSpace(saved) ? MetricNone : saved;
-            if (!MetricOptions.Contains(selected)) MetricOptions.Add(selected);
-            slots.Add(new MetricSlot(i + 1, selected, OnMetricSlotChanged));
-        }
-        MetricSlots = slots;
+        // Categories mirror Info Hub's editor; tokens are the firmware vocabulary from the
+        // HomeUI apk. Fan chips for headers this board actually has join once sensors open.
+        AddMetricGroup("Temperature",
+            ("CPU Temperature", "CPU"), ("Motherboard Temperature", "Motherboard"), ("GPU Temperature", "GPU"));
+        AddMetricGroup("Fan Speed",
+            ("Fan Speed CPU Fan", "CPU"), ("Fan Speed AIO Pump", "AIO Pump"));
+        AddMetricGroup("Usage / Load",
+            ("CPU Usage", "CPU Usage"), ("CPU Load", "CPU Load"),
+            ("GPU Usage", "GPU Usage"), ("GPU Load", "GPU Load"));
+        AddMetricGroup("Frequency",
+            ("CPU Speed Average", "CPU"), ("GPU Frequency", "GPU"),
+            ("GPU Speed", "GPU Speed"), ("Memory Frequency", "Memory"));
+        AddMetricGroup("Voltage",
+            ("CPU Voltage", "CPU"), ("GPU Voltage", "GPU"));
+        AddMetricGroup("Other",
+            ("GPU Power", "GPU Power"), ("Date&Time", "Date & Time"));
 
         UpdateMetricsStreaming();
     }
 
-    private void OnMetricSlotChanged()
+    private void AddMetricGroup(string name, params (string Token, string Label)[] chips)
     {
-        _settings.MetricSlots = MetricSlots
-            .Select(s => s.Selected == MetricNone ? "" : s.Selected)
-            .ToArray();
-        SaveSettings();
+        MetricGroups.Add(new MetricChipGroup(name, chips
+            .Select(c => new MetricChip(c.Token, c.Label, _activeMetricTokens.Contains(c.Token), OnChipToggled))
+            .ToList()));
+    }
 
-        // Debounce: picking six metrics shouldn't fire six config pushes at the panel.
+    /// <summary>Chip toggle gate: max six active (the panel has six widget regions).</summary>
+    private bool OnChipToggled(MetricChip chip, bool turningOn)
+    {
+        if (turningOn)
+        {
+            if (_activeMetricTokens.Count >= 6)
+            {
+                MetricsStatus = "The panel has six widget slots — untick one first.";
+                return false;
+            }
+            if (!_activeMetricTokens.Contains(chip.Token)) _activeMetricTokens.Add(chip.Token);
+        }
+        else
+        {
+            _activeMetricTokens.Remove(chip.Token);
+        }
+        MetricsStatus = $"{_activeMetricTokens.Count} of 6 widget slots used.";
+        _settings.MetricSlots = _activeMetricTokens
+            .Concat(Enumerable.Repeat("", 6)).Take(6).ToArray();
+        SaveSettings();
+        DebouncedPushScreenConfig();
+        return true;
+    }
+
+    /// <summary>Debounce config pushes so toggling several chips fires one panel update.</summary>
+    private void DebouncedPushScreenConfig()
+    {
         if (_slotPushDebounce is null)
         {
             _slotPushDebounce = new System.Windows.Threading.DispatcherTimer
@@ -915,6 +992,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>Add chips for this board's real fan headers into the "Fan Speed" group.</summary>
     private void AddDiscoveredFanOptions(IReadOnlyList<string> fanNames)
     {
         if (fanNames.Count == 0) return;
@@ -922,11 +1000,23 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (app is null) return;
         app.Dispatcher.BeginInvoke(() =>
         {
+            int groupIndex = -1;
+            for (int i = 0; i < MetricGroups.Count; i++)
+                if (MetricGroups[i].Name == "Fan Speed") { groupIndex = i; break; }
+            if (groupIndex < 0) return;
+
+            var group = MetricGroups[groupIndex];
+            var chips = group.Chips.ToList();
+            bool changed = false;
             foreach (var name in fanNames)
             {
-                string option = "Fan Speed " + name;
-                if (!MetricOptions.Contains(option)) MetricOptions.Add(option);
+                string token = "Fan Speed " + name;
+                if (chips.Any(c => c.Token == token)) continue;
+                chips.Add(new MetricChip(token, name, _activeMetricTokens.Contains(token), OnChipToggled));
+                changed = true;
             }
+            if (changed)
+                MetricGroups[groupIndex] = group with { Chips = chips };
         });
     }
 

@@ -160,12 +160,14 @@ public sealed class BacklightService : IDisposable
 
     /// <summary>
     /// Make the panel loop a playlist of videos (each already present in /sdcard/pcMedia or
-    /// the stock preset dir). <paramref name="playMode"/>: "Single" loops the FIRST video
-    /// only (verified live — it never advances); "Random" rotates through the list shuffled.
-    /// Those are the only two modes the firmware knows, so multi-video = Random.
+    /// the stock preset dir). <paramref name="playMode"/> is the firmware enum (from Info
+    /// Hub's source, each verified live): "Single" loops the FIRST video only, "Cycle" plays
+    /// the list in order, "Random" shuffles. The optional hex colors style the metric
+    /// widgets' title/value text.
     /// </summary>
     public (bool Ok, string Message) SetPanelPlaylist(
-        IReadOnlyList<string> deviceFileNames, string playMode = "Single", string?[]? sysinfoDisplay = null)
+        IReadOnlyList<string> deviceFileNames, string playMode = "Cycle", string?[]? sysinfoDisplay = null,
+        string? titleColor = null, string? contentColor = null)
     {
         if (deviceFileNames.Count == 0)
             return (false, "Playlist is empty — nothing to activate.");
@@ -175,13 +177,15 @@ public sealed class BacklightService : IDisposable
             for (int i = 0; i < Math.Min(6, sysinfoDisplay.Length); i++) slots[i] = sysinfoDisplay[i];
         string slotsJson = string.Join(",", slots.Select(s => JsonString(s ?? "")));
         string mediaJson = string.Join(",", deviceFileNames.Select(JsonString));
-        if (playMode is not ("Single" or "Random")) playMode = "Single";
+        if (playMode is not ("Single" or "Cycle" or "Random")) playMode = "Cycle";
+        string title = SafeHexColor(titleColor);
+        string content = SafeHexColor(contentColor);
 
         // Matches the captured Info Hub message exactly (id "Customization" + CamelCase playMode).
         string body =
             "{\"id\":\"Customization\",\"screenMode\":\"Full Screen\",\"playMode\":\"" + playMode + "\"," +
             "\"media\":[" + mediaJson + "]," +
-            "\"settings\":{\"titleColor\":\"#25cfe5\",\"contentColor\":\"#25cfe5\"," +
+            "\"settings\":{\"titleColor\":" + JsonString(title) + ",\"contentColor\":" + JsonString(content) + "," +
             "\"filter\":{\"value\":null,\"opacity\":100},\"badges\":[]}," +
             "\"sysinfoDisplay\":[" + slotsJson + "]}";
 
@@ -301,6 +305,12 @@ public sealed class BacklightService : IDisposable
     /// <summary>Minimal JSON string literal (quotes + backslash escaping) for file names.</summary>
     private static string JsonString(string s)
         => "\"" + s.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+
+    /// <summary>Validate a "#rrggbb" hex color, falling back to Info Hub's stock cyan.</summary>
+    private static string SafeHexColor(string? color)
+        => color is not null && System.Text.RegularExpressions.Regex.IsMatch(color, "^#[0-9a-fA-F]{6}$")
+            ? color.ToLowerInvariant()
+            : "#25cfe5";
 
     private bool WantHold()
     {

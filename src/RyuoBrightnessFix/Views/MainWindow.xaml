@@ -82,39 +82,19 @@
                 </StackPanel>
             </TabItem>
 
-            <!-- ================= VIDEO ================= -->
+            <!-- ================= VIDEO (Info Hub-style: screen + media library + metrics) ================= -->
             <TabItem Header="Video">
-                <StackPanel>
-                    <Border Style="{StaticResource Card}">
-                        <StackPanel>
-                            <TextBlock Text="Panel Video" Style="{StaticResource HeaderText}" />
-                            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-                                <Button Content="Choose video…" Style="{StaticResource SecondaryButton}"
-                                        Command="{Binding ChooseVideoCommand}" Padding="12,6" />
-                                <TextBlock Text="{Binding SelectedVideoName}" VerticalAlignment="Center"
-                                           Margin="12,0,0,0" Style="{StaticResource SubtleText}"
-                                           TextTrimming="CharacterEllipsis" />
-                            </StackPanel>
-                            <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
-                                <TextBlock Text="Scale mode:" VerticalAlignment="Center"
-                                           Style="{StaticResource SubtleText}" />
-                                <ComboBox ItemsSource="{Binding VideoScaleModes}"
-                                          SelectedItem="{Binding SelectedVideoScaleMode, Mode=TwoWay}"
-                                          Width="130" Margin="10,0,0,0" VerticalAlignment="Center" />
-                            </StackPanel>
-                            <TextBlock Text="{Binding VideoScaleModeDescription}"
-                                       Style="{StaticResource SubtleText}" TextWrapping="Wrap"
-                                       Margin="0,6,0,0" />
-
-                            <!-- The LCD screen: the panel's exact shape (2240:1080). Shows the
-                                 video the panel is playing right now; while choosing a new file
-                                 it previews that file with the selected scale mode applied —
-                                 what you see here is what the cooler shows. -->
-                            <StackPanel Visibility="{Binding HasPreview, Converter={StaticResource BoolToVis}}"
-                                        Margin="0,14,0,0">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel>
+                        <!-- The LCD screen: the panel's exact shape (2240:1080), playing the
+                             highlighted library entry — what you see is what the cooler shows. -->
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
                                 <TextBlock Text="{Binding PreviewTitle}" Style="{StaticResource SubtleText}"
-                                           Margin="0,0,0,6" />
-                                <Viewbox Stretch="Uniform" HorizontalAlignment="Left">
+                                           Margin="0,0,0,6"
+                                           Visibility="{Binding HasPreview, Converter={StaticResource BoolToVis}}" />
+                                <Viewbox Stretch="Uniform" HorizontalAlignment="Left"
+                                         Visibility="{Binding HasPreview, Converter={StaticResource BoolToVis}}">
                                     <Border Width="415" Height="200" Background="Black"
                                             BorderBrush="{StaticResource BorderBrush}" BorderThickness="2"
                                             CornerRadius="6">
@@ -126,8 +106,7 @@
                                         <MediaElement x:Name="PreviewPlayer"
                                                       Source="{Binding PreviewSource}"
                                                       LoadedBehavior="Manual" UnloadedBehavior="Stop"
-                                                      IsMuted="True"
-                                                      Stretch="{Binding PreviewStretch}"
+                                                      IsMuted="True" Stretch="UniformToFill"
                                                       MediaOpened="PreviewPlayer_MediaOpened"
                                                       MediaEnded="PreviewPlayer_MediaEnded"
                                                       MediaFailed="PreviewPlayer_MediaFailed" />
@@ -135,86 +114,154 @@
                                 </Viewbox>
                                 <TextBlock x:Name="PreviewError" Style="{StaticResource SubtleText}"
                                            TextWrapping="Wrap" Margin="0,4,0,0" Visibility="Collapsed" />
-                            </StackPanel>
-                            <Button Content="Add to panel playlist" Style="{StaticResource AccentButton}"
-                                    Command="{Binding SetVideoCommand}" Width="180" HorizontalAlignment="Left"
-                                    Margin="0,12,0,0" />
-                            <TextBlock Text="{Binding VideoStatus}" Style="{StaticResource SubtleText}"
-                                       Margin="0,10,0,0" TextWrapping="Wrap" />
 
-                            <!-- The playlist the panel rotates through -->
-                            <Grid Margin="0,12,0,0">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <ListBox Grid.Column="0" Height="96"
-                                         Background="{StaticResource WindowBackgroundBrush}"
-                                         Foreground="{StaticResource ForegroundBrush}"
-                                         BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
-                                         ItemsSource="{Binding Playlist}"
-                                         SelectedItem="{Binding SelectedPlaylistItem, Mode=TwoWay}" />
-                                <StackPanel Grid.Column="1" Margin="8,0,0,0">
-                                    <Button Content="Remove" Style="{StaticResource SecondaryButton}"
-                                            Command="{Binding RemoveVideoCommand}" Padding="10,4" />
-                                    <Button Content="Up" Style="{StaticResource SecondaryButton}"
-                                            Command="{Binding MoveVideoUpCommand}" Padding="10,4" Margin="0,6,0,0" />
-                                    <Button Content="Down" Style="{StaticResource SecondaryButton}"
-                                            Command="{Binding MoveVideoDownCommand}" Padding="10,4" Margin="0,6,0,0" />
+                                <!-- Play mode, Info Hub-style, under the screen -->
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
+                                    <ToggleButton Style="{StaticResource ModeToggle}" Content="Repeat one"
+                                                  IsChecked="{Binding IsRepeatOne}"
+                                                  ToolTip="Loop the selected video forever" />
+                                    <ToggleButton Style="{StaticResource ModeToggle}" Content="Repeat all"
+                                                  IsChecked="{Binding IsRepeatAll}" Margin="6,0,0,0"
+                                                  ToolTip="Play every video in order, then start over" />
+                                    <ToggleButton Style="{StaticResource ModeToggle}" Content="Shuffle"
+                                                  IsChecked="{Binding IsShuffle}" Margin="6,0,0,0"
+                                                  ToolTip="Rotate through the videos in random order" />
                                 </StackPanel>
-                            </Grid>
-                            <TextBlock Text="{Binding ActiveVideoDisplay}" Style="{StaticResource SubtleText}"
-                                       Margin="0,6,0,0" TextWrapping="Wrap" />
-                        </StackPanel>
-                    </Border>
+                            </StackPanel>
+                        </Border>
 
-                    <Border Style="{StaticResource Card}">
-                        <TextBlock Style="{StaticResource SubtleText}" TextWrapping="Wrap"
-                                   Text="Queue as many videos as you like: each is transcoded to the panel's playable format (1920×960 — its decoder's limit, same as ASUS's stock videos), uploaded, and rotated by the panel itself. One video loops; multiple videos rotate shuffled (the firmware's only multi-video mode). Needs ffmpeg (bundled) and ASUS's adb. The panel forgets its content when it reboots; the app re-asserts the playlist automatically every time it reconnects, so the screen never sits black. Note: at 100% brightness a dark video still looks dim — that's the footage, not the backlight." />
-                    </Border>
-                </StackPanel>
-            </TabItem>
-
-            <!-- ================= METRICS ================= -->
-            <TabItem Header="Metrics">
-                <StackPanel>
-                    <Border Style="{StaticResource Card}">
-                        <StackPanel>
-                            <TextBlock Text="On-screen Metrics" Style="{StaticResource HeaderText}" />
-                            <CheckBox Content="Show live system metrics on the LCD"
-                                      IsChecked="{Binding MetricsEnabled}" />
-                            <TextBlock Text="{Binding MetricsAccessNote}" Style="{StaticResource SubtleText}"
-                                       TextWrapping="Wrap" Margin="0,4,0,0"
-                                       Visibility="{Binding ShowMetricsAccessNote, Converter={StaticResource BoolToVis}}" />
-                            <ItemsControl ItemsSource="{Binding MetricSlots}" Margin="0,10,0,0"
-                                          IsEnabled="{Binding MetricsEnabled}">
-                                <ItemsControl.ItemsPanel>
-                                    <ItemsPanelTemplate>
-                                        <UniformGrid Columns="2" />
-                                    </ItemsPanelTemplate>
-                                </ItemsControl.ItemsPanel>
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <StackPanel Orientation="Horizontal" Margin="0,4">
-                                            <TextBlock Text="{Binding Number, StringFormat=Slot {0}:}"
-                                                       Style="{StaticResource SubtleText}" Width="46"
-                                                       VerticalAlignment="Center" />
-                                            <ComboBox Width="165"
-                                                      ItemsSource="{Binding DataContext.MetricOptions,
-                                                                    RelativeSource={RelativeSource AncestorType=Window}}"
-                                                      SelectedItem="{Binding Selected, Mode=TwoWay}" />
+                        <!-- Media library: thumbnail strip + Add/Remove/reorder -->
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="Media library" Style="{StaticResource HeaderText}" />
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" Margin="0,0,10,0">
+                                        <Button Content="Add" Style="{StaticResource SecondaryButton}"
+                                                Command="{Binding ChooseVideoCommand}" Padding="14,5" />
+                                        <Button Content="Remove" Style="{StaticResource SecondaryButton}"
+                                                Command="{Binding RemoveVideoCommand}" Padding="14,5" Margin="0,6,0,0" />
+                                        <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                            <Button Content="◀" Style="{StaticResource SecondaryButton}"
+                                                    Command="{Binding MoveVideoUpCommand}" Padding="8,5"
+                                                    ToolTip="Move the selected video earlier" />
+                                            <Button Content="▶" Style="{StaticResource SecondaryButton}"
+                                                    Command="{Binding MoveVideoDownCommand}" Padding="8,5"
+                                                    Margin="6,0,0,0" ToolTip="Move the selected video later" />
                                         </StackPanel>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-                        </StackPanel>
-                    </Border>
+                                    </StackPanel>
+                                    <ListBox Grid.Column="1" Background="Transparent" BorderThickness="0"
+                                             ItemsSource="{Binding Playlist}"
+                                             SelectedItem="{Binding SelectedPlaylistItem, Mode=TwoWay}"
+                                             ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                             ScrollViewer.VerticalScrollBarVisibility="Disabled">
+                                        <ListBox.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <StackPanel Orientation="Horizontal" />
+                                            </ItemsPanelTemplate>
+                                        </ListBox.ItemsPanel>
+                                        <ListBox.ItemContainerStyle>
+                                            <Style TargetType="ListBoxItem">
+                                                <Setter Property="Template">
+                                                    <Setter.Value>
+                                                        <ControlTemplate TargetType="ListBoxItem">
+                                                            <Border x:Name="Bd" BorderThickness="2" CornerRadius="4"
+                                                                    Margin="3" Background="Black"
+                                                                    BorderBrush="{StaticResource BorderBrush}">
+                                                                <ContentPresenter />
+                                                            </Border>
+                                                            <ControlTemplate.Triggers>
+                                                                <Trigger Property="IsSelected" Value="True">
+                                                                    <Setter TargetName="Bd" Property="BorderBrush"
+                                                                            Value="{StaticResource AccentBrush}" />
+                                                                </Trigger>
+                                                            </ControlTemplate.Triggers>
+                                                        </ControlTemplate>
+                                                    </Setter.Value>
+                                                </Setter>
+                                            </Style>
+                                        </ListBox.ItemContainerStyle>
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid Width="100" Height="50" ToolTip="{Binding File}">
+                                                    <TextBlock Text="{Binding File}" FontSize="9"
+                                                               Foreground="{StaticResource SubtleForegroundBrush}"
+                                                               TextWrapping="Wrap" Margin="4" />
+                                                    <Image Source="{Binding Thumbnail}" Stretch="UniformToFill" />
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                </Grid>
+                                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                    <TextBlock Text="Scale mode for new videos:" VerticalAlignment="Center"
+                                               Style="{StaticResource SubtleText}" />
+                                    <ComboBox ItemsSource="{Binding VideoScaleModes}"
+                                              SelectedItem="{Binding SelectedVideoScaleMode, Mode=TwoWay}"
+                                              Width="110" Margin="10,0,0,0" VerticalAlignment="Center"
+                                              ToolTip="Fill = crop to cover the screen · Fit = letterbox · Stretch = distort" />
+                                </StackPanel>
+                                <TextBlock Text="{Binding VideoStatus}" Style="{StaticResource SubtleText}"
+                                           Margin="0,8,0,0" TextWrapping="Wrap" />
+                                <TextBlock Text="{Binding ActiveVideoDisplay}" Style="{StaticResource SubtleText}"
+                                           Margin="0,4,0,0" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
 
-                    <Border Style="{StaticResource Card}">
-                        <TextBlock Style="{StaticResource SubtleText}" TextWrapping="Wrap"
-                                   Text="Overlays up to six live widgets on the panel (temperatures, loads, fan speeds, clock) — the same telemetry ASUS Info Hub streams, without Info Hub. Values refresh every 3 seconds while the app runs. The slot layout is stored on the panel and re-asserted automatically with the video. Fan entries are discovered from your motherboard's headers once streaming starts." />
-                    </Border>
-                </StackPanel>
+                        <!-- On-screen metrics (Info Hub-style chips), on the same screen -->
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="On-screen metrics" Style="{StaticResource HeaderText}" />
+                                <CheckBox Content="Show live system metrics on the LCD"
+                                          IsChecked="{Binding MetricsEnabled}" />
+                                <TextBlock Text="{Binding MetricsAccessNote}" Style="{StaticResource SubtleText}"
+                                           TextWrapping="Wrap" Margin="0,4,0,0"
+                                           Visibility="{Binding ShowMetricsAccessNote, Converter={StaticResource BoolToVis}}" />
+                                <ItemsControl ItemsSource="{Binding MetricGroups}" Margin="0,6,0,0"
+                                              IsEnabled="{Binding MetricsEnabled}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <StackPanel Margin="0,6,0,0">
+                                                <TextBlock Text="{Binding Name}" FontFamily="Segoe UI Semibold"
+                                                           FontSize="12" Foreground="{StaticResource ForegroundBrush}" />
+                                                <ItemsControl ItemsSource="{Binding Chips}">
+                                                    <ItemsControl.ItemsPanel>
+                                                        <ItemsPanelTemplate>
+                                                            <WrapPanel />
+                                                        </ItemsPanelTemplate>
+                                                    </ItemsControl.ItemsPanel>
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <ToggleButton Style="{StaticResource ChipToggle}"
+                                                                          Content="{Binding Label}"
+                                                                          IsChecked="{Binding IsSelected, Mode=TwoWay}" />
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                </ItemsControl>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock Text="{Binding MetricsStatus}" Style="{StaticResource SubtleText}"
+                                           Margin="0,6,0,0" />
+                                <StackPanel Orientation="Horizontal" Margin="0,8,0,0"
+                                            IsEnabled="{Binding MetricsEnabled}">
+                                    <TextBlock Text="Title color:" VerticalAlignment="Center"
+                                               Style="{StaticResource SubtleText}" />
+                                    <TextBox Style="{StaticResource InputBox}" Width="70" Margin="8,0,0,0"
+                                             Text="{Binding MetricTitleColor, UpdateSourceTrigger=LostFocus}" />
+                                    <TextBlock Text="Content color:" VerticalAlignment="Center" Margin="16,0,0,0"
+                                               Style="{StaticResource SubtleText}" />
+                                    <TextBox Style="{StaticResource InputBox}" Width="70" Margin="8,0,0,0"
+                                             Text="{Binding MetricContentColor, UpdateSourceTrigger=LostFocus}" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
             </TabItem>
 
             <!-- ================= SETTINGS ================= -->

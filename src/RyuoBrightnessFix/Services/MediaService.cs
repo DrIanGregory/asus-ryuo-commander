@@ -25,7 +25,8 @@ public sealed class MediaService
 {
     private const string DeviceMediaDir = "/sdcard/pcMedia";
     private const string DevicePresetDir = "/sdcard/pcMediaPreset";
-    private const int CacheKeepCount = 5;
+    // Videos + their .png thumbnails both live in the cache; size for a ~12-entry playlist.
+    private const int CacheKeepCount = 24;
 
     private readonly ILogger _log;
     private readonly BacklightService _backlight;
@@ -85,6 +86,52 @@ public sealed class MediaService
                 return null;
             }
         }, ct);
+    }
+
+    /// <summary>
+    /// A thumbnail (PNG, 192px wide) for an on-device video, extracted with ffmpeg from the
+    /// local copy (which is pulled back over adb if needed). Cached beside the video; returns
+    /// null when neither the video nor ffmpeg is obtainable.
+    /// </summary>
+    public async Task<string?> GetThumbnailAsync(string deviceFileName, CancellationToken ct = default)
+    {
+        try
+        {
+            Directory.CreateDirectory(CacheDir);
+            string thumb = Path.Combine(CacheDir, deviceFileName + ".png");
+            if (File.Exists(thumb) && new FileInfo(thumb).Length > 0) return thumb;
+
+            string? local = await GetLocalCopyAsync(deviceFileName, ct);
+            if (local is null) return null;
+            var ffmpeg = FindFfmpeg();
+            if (ffmpeg is null) return null;
+
+            var (exit, _, err) = Run(ffmpeg, new[]
+            {
+                "-y", "-hide_banner", "-loglevel", "error",
+                "-ss", "1", "-i", local,
+                "-frames:v", "1", "-vf", "scale=192:-2",
+                thumb,
+            }, null, TimeSpan.FromSeconds(30), ct);
+            if (exit == 0 && File.Exists(thumb) && new FileInfo(thumb).Length > 0) return thumb;
+
+            // Very short clips can have no frame at t=1s — retry from the start.
+            (exit, _, err) = Run(ffmpeg, new[]
+            {
+                "-y", "-hide_banner", "-loglevel", "error",
+                "-i", local, "-frames:v", "1", "-vf", "scale=192:-2", thumb,
+            }, null, TimeSpan.FromSeconds(30), ct);
+            if (exit == 0 && File.Exists(thumb) && new FileInfo(thumb).Length > 0) return thumb;
+
+            _log.Warning("Thumbnail extraction failed for {File}: {Err}", deviceFileName, Trim(err));
+            return null;
+        }
+        catch (OperationCanceledException) { return null; }
+        catch (Exception ex)
+        {
+            _log.Warning(ex, "Thumbnail for {File} failed.", deviceFileName);
+            return null;
+        }
     }
 
     /// <summary>Keep the newest few cached videos; old panel videos are dead weight.</summary>
