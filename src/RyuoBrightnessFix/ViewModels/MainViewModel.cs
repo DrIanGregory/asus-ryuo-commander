@@ -794,6 +794,82 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public System.Collections.ObjectModel.ObservableCollection<MetricChipGroup> MetricGroups { get; } = new();
 
+    /// <summary>
+    /// One live widget mirrored onto the in-app LCD preview, at the same region the panel
+    /// draws it. Positions are the panel's six fixed widget regions (measured from photos of
+    /// the real panel), in the preview's 411×196 coordinate space.
+    /// </summary>
+    public sealed class MetricOverlay : ObservableObject
+    {
+        public MetricOverlay(string title, double x, double y)
+        {
+            Title = title;
+            X = x;
+            Y = y;
+        }
+
+        public string Title { get; }
+        public double X { get; }
+        public double Y { get; }
+
+        private string _value = "—";
+        public string Value { get => _value; set => SetProperty(ref _value, value); }
+    }
+
+    public System.Collections.ObjectModel.ObservableCollection<MetricOverlay> MetricOverlays { get; } = new();
+
+    // The panel's six widget anchor points, scaled from 2240×1080 photos to the 411×196 mock.
+    private static readonly (double X, double Y)[] OverlayAnchors =
+    {
+        (14, 26),    // slot 1: upper left
+        (14, 106),   // slot 2: lower left
+        (222, 108),  // slot 3: center
+        (296, 30),   // slot 4: upper right
+        (296, 74),   // slot 5: mid right
+        (296, 128),  // slot 6: lower right
+    };
+
+    /// <summary>Rebuild the preview overlays to mirror the active widget slots.</summary>
+    private void RebuildMetricOverlays()
+    {
+        var app = Application.Current;
+        void Rebuild()
+        {
+            MetricOverlays.Clear();
+            for (int i = 0; i < _activeMetricTokens.Count && i < OverlayAnchors.Length; i++)
+            {
+                var (x, y) = OverlayAnchors[i];
+                MetricOverlays.Add(new MetricOverlay(_activeMetricTokens[i], x, y));
+            }
+            RefreshOverlayValues();
+        }
+        if (app is null || app.Dispatcher.CheckAccess()) Rebuild();
+        else app.Dispatcher.BeginInvoke(Rebuild);
+    }
+
+    /// <summary>Push the latest sensor readings into the preview overlays.</summary>
+    private void RefreshOverlayValues()
+    {
+        var metrics = _metrics;
+        if (metrics is null || MetricOverlays.Count == 0) return;
+        var values = metrics.GetWidgetValues(MetricOverlays.Select(o => o.Title));
+        foreach (var overlay in MetricOverlays)
+            if (values.TryGetValue(overlay.Title, out var v)) overlay.Value = v;
+    }
+
+    public System.Windows.Media.Brush MetricTitleBrush => MakeBrush(_settings.MetricTitleColor);
+    public System.Windows.Media.Brush MetricContentBrush => MakeBrush(_settings.MetricContentColor);
+
+    private static System.Windows.Media.Brush MakeBrush(string hex)
+    {
+        try
+        {
+            var color = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(hex);
+            return new System.Windows.Media.SolidColorBrush(color);
+        }
+        catch { return System.Windows.Media.Brushes.Cyan; }
+    }
+
     // The active widgets in slot order (max 6 — the panel has six fixed regions).
     private readonly List<string> _activeMetricTokens = new();
 
@@ -838,6 +914,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _settings.MetricTitleColor = value;
             SaveSettings();
             OnPropertyChanged();
+            OnPropertyChanged(nameof(MetricTitleBrush));
             DebouncedPushScreenConfig();
         }
     }
@@ -851,6 +928,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _settings.MetricContentColor = value;
             SaveSettings();
             OnPropertyChanged();
+            OnPropertyChanged(nameof(MetricContentBrush));
             DebouncedPushScreenConfig();
         }
     }
@@ -876,6 +954,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         AddMetricGroup("Other",
             ("GPU Power", "GPU Power"), ("Date&Time", "Date & Time"));
 
+        RebuildMetricOverlays();
         UpdateMetricsStreaming();
     }
 
@@ -906,6 +985,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _settings.MetricSlots = _activeMetricTokens
             .Concat(Enumerable.Repeat("", 6)).Take(6).ToArray();
         SaveSettings();
+        RebuildMetricOverlays();
         DebouncedPushScreenConfig();
         return true;
     }
@@ -965,6 +1045,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
             string? json = _metrics.BuildAllJson();
             if (json is null) return;
+
+            // Mirror the fresh readings onto the in-app LCD preview overlays.
+            Application.Current?.Dispatcher.BeginInvoke(RefreshOverlayValues);
 
             var (ok, msg) = _backlight.SendSysinfo(json);
             if (ok)

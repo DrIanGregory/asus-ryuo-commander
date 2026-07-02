@@ -116,7 +116,9 @@ public sealed class SystemMetricsService : IDisposable
                     hw.Update();
                     foreach (var sub in hw.SubHardware) sub.Update();
                 }
-                return Render(_computer);
+                var snap = Collect(_computer);
+                _lastSnapshot = snap;
+                return RenderJson(snap);
             }
             catch (Exception ex)
             {
@@ -126,9 +128,70 @@ public sealed class SystemMetricsService : IDisposable
         }
     }
 
-    // ---------------------------------------------------------------- rendering
+    /// <summary>Everything one poll saw, for both the JSON stream and the UI overlays.</summary>
+    public sealed record Snapshot(
+        double CpuLoad, double CpuTemp, double CpuPkgTemp, double CpuClock, double CpuPower, double CpuVolt,
+        bool HasDedicatedGpu, double GpuLoad, double GpuTemp, double GpuFan, double GpuClock,
+        double GpuPower, double GpuVolt,
+        long MemTotalMb, long MemUsedMb, double MemLoad,
+        long DiskTotalGb, long DiskUsedGb, double DiskLoad, double DiskActivity, double DiskTemp,
+        double DiskRead, double DiskWrite,
+        double NetUp, double NetDown,
+        double MbTemp, double ChipsetTemp,
+        IReadOnlyList<(string Name, double Rpm)> Fans);
 
-    private static string Render(Computer computer)
+    private Snapshot? _lastSnapshot;
+
+    /// <summary>
+    /// Formatted display values (e.g. "71 °C", "3139 RPM") for the given widget tokens, from
+    /// the most recent poll — what the panel's widgets show, mirrored for the in-app preview.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> GetWidgetValues(IEnumerable<string> tokens)
+    {
+        var snap = _lastSnapshot;
+        var result = new Dictionary<string, string>();
+        foreach (var token in tokens)
+        {
+            if (string.IsNullOrWhiteSpace(token)) continue;
+            result[token] = FormatWidgetValue(token, snap);
+        }
+        return result;
+    }
+
+    private static string FormatWidgetValue(string token, Snapshot? s)
+    {
+        if (token == "Date&Time")
+            return DateTime.Now.ToString("ddd d  HH:mm", CultureInfo.InvariantCulture).ToUpperInvariant();
+        if (s is null) return "—";
+        if (token.StartsWith("Fan Speed ", StringComparison.OrdinalIgnoreCase))
+        {
+            string fan = token["Fan Speed ".Length..];
+            var match = s.Fans.FirstOrDefault(f =>
+                f.Name.Equals(fan, StringComparison.OrdinalIgnoreCase) ||
+                f.Name.Contains(fan, StringComparison.OrdinalIgnoreCase) ||
+                fan.Contains(f.Name, StringComparison.OrdinalIgnoreCase));
+            return match.Name is null ? "0 RPM" : $"{match.Rpm:0} RPM";
+        }
+        return token switch
+        {
+            "CPU Temperature" => $"{s.CpuTemp:0} °C",
+            "Motherboard Temperature" => $"{s.MbTemp:0} °C",
+            "GPU Temperature" => $"{s.GpuTemp:0} °C",
+            "CPU Usage" or "CPU Load" => $"{s.CpuLoad:0} %",
+            "GPU Usage" or "GPU Load" => $"{s.GpuLoad:0} %",
+            "CPU Speed Average" => $"{s.CpuClock:0} MHz",
+            "GPU Frequency" or "GPU Speed" => $"{s.GpuClock:0} MHz",
+            "Memory Frequency" => "0 MHz",
+            "CPU Voltage" => $"{s.CpuVolt:0.###} V",
+            "GPU Voltage" => $"{s.GpuVolt:0.###} V",
+            "GPU Power" => $"{s.GpuPower:0} W",
+            _ => "—",
+        };
+    }
+
+    // ---------------------------------------------------------------- collection
+
+    private static Snapshot Collect(Computer computer)
     {
         var all = computer.Hardware.ToList();
 
@@ -209,44 +272,54 @@ public sealed class SystemMetricsService : IDisposable
             }
         }
 
+        return new Snapshot(
+            cpuLoad, cpuTemp, cpuPkgTemp, cpuClock, cpuPower, cpuVolt,
+            hasDedicated, gpuLoad, gpuTemp, gpuFan, gpuClock, gpuPower, gpuVolt,
+            memTotalMb, memUsedMb, memLoad,
+            diskTotalGb, diskUsedGb, diskLoad, diskActivity, diskTemp, diskRead, diskWrite,
+            netUp, netDown, mbTemp, chipsetTemp, fans);
+    }
+
+    private static string RenderJson(Snapshot s)
+    {
         var sb = new StringBuilder(768);
-        sb.Append("{\"network\":{\"upload\":").Append(N(netUp))
-          .Append(",\"download\":").Append(N(netDown))
-          .Append("},\"memory\":{\"total\":").Append(memTotalMb)
-          .Append(",\"used\":").Append(memUsedMb)
-          .Append(",\"load\":").Append(N(memLoad))
+        sb.Append("{\"network\":{\"upload\":").Append(N(s.NetUp))
+          .Append(",\"download\":").Append(N(s.NetDown))
+          .Append("},\"memory\":{\"total\":").Append(s.MemTotalMb)
+          .Append(",\"used\":").Append(s.MemUsedMb)
+          .Append(",\"load\":").Append(N(s.MemLoad))
           .Append(",\"temperature\":0,\"speed\":0}")
-          .Append(",\"cpu\":{\"load\":").Append(N(cpuLoad))
-          .Append(",\"temperature\":").Append(N(cpuTemp))
-          .Append(",\"temperaturePackage\":").Append(N(cpuPkgTemp))
-          .Append(",\"speedAverage\":").Append(N(cpuClock))
-          .Append(",\"power\":").Append(N(cpuPower))
-          .Append(",\"voltage\":").Append(F(cpuVolt))
-          .Append(",\"usage\":").Append(N(cpuLoad))
-          .Append("},\"gpu\":{\"hasDedicated\":").Append(hasDedicated ? "true" : "false")
-          .Append(",\"load\":").Append(N(gpuLoad))
-          .Append(",\"temperature\":").Append(N(gpuTemp))
-          .Append(",\"fan\":").Append(N(gpuFan))
-          .Append(",\"speed\":").Append(N(gpuClock))
-          .Append(",\"power\":").Append(N(gpuPower))
-          .Append(",\"voltage\":").Append(F(gpuVolt))
-          .Append("},\"disk\":{\"total\":").Append(diskTotalGb)
-          .Append(",\"used\":").Append(diskUsedGb)
-          .Append(",\"load\":").Append(N(diskLoad))
-          .Append(",\"activity\":").Append(N(diskActivity))
-          .Append(",\"temperature\":").Append(N(diskTemp))
-          .Append(",\"readSpeed\":").Append(N(diskRead))
-          .Append(",\"writeSpeed\":").Append(N(diskWrite))
+          .Append(",\"cpu\":{\"load\":").Append(N(s.CpuLoad))
+          .Append(",\"temperature\":").Append(N(s.CpuTemp))
+          .Append(",\"temperaturePackage\":").Append(N(s.CpuPkgTemp))
+          .Append(",\"speedAverage\":").Append(N(s.CpuClock))
+          .Append(",\"power\":").Append(N(s.CpuPower))
+          .Append(",\"voltage\":").Append(F(s.CpuVolt))
+          .Append(",\"usage\":").Append(N(s.CpuLoad))
+          .Append("},\"gpu\":{\"hasDedicated\":").Append(s.HasDedicatedGpu ? "true" : "false")
+          .Append(",\"load\":").Append(N(s.GpuLoad))
+          .Append(",\"temperature\":").Append(N(s.GpuTemp))
+          .Append(",\"fan\":").Append(N(s.GpuFan))
+          .Append(",\"speed\":").Append(N(s.GpuClock))
+          .Append(",\"power\":").Append(N(s.GpuPower))
+          .Append(",\"voltage\":").Append(F(s.GpuVolt))
+          .Append("},\"disk\":{\"total\":").Append(s.DiskTotalGb)
+          .Append(",\"used\":").Append(s.DiskUsedGb)
+          .Append(",\"load\":").Append(N(s.DiskLoad))
+          .Append(",\"activity\":").Append(N(s.DiskActivity))
+          .Append(",\"temperature\":").Append(N(s.DiskTemp))
+          .Append(",\"readSpeed\":").Append(N(s.DiskRead))
+          .Append(",\"writeSpeed\":").Append(N(s.DiskWrite))
           .Append("},\"fans\":[");
-        for (int i = 0; i < fans.Count; i++)
+        for (int i = 0; i < s.Fans.Count; i++)
         {
             if (i > 0) sb.Append(',');
             sb.Append("{\"onBoard\":true,\"name\":\"")
-              .Append(fans[i].Name.Replace("\\", "\\\\").Replace("\"", "\\\""))
-              .Append("\",\"value\":").Append(N(fans[i].Rpm)).Append('}');
+              .Append(s.Fans[i].Name.Replace("\\", "\\\\").Replace("\"", "\\\""))
+              .Append("\",\"value\":").Append(N(s.Fans[i].Rpm)).Append('}');
         }
-        sb.Append("],\"motherboard\":{\"temperature\":").Append(N(mbTemp))
-          .Append(",\"chipsetTemperature\":").Append(N(chipsetTemp))
+        sb.Append("],\"motherboard\":{\"temperature\":").Append(N(s.MbTemp))
+          .Append(",\"chipsetTemperature\":").Append(N(s.ChipsetTemp))
           .Append("},\"timestamp\":").Append(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())
           .Append('}');
         return sb.ToString();
