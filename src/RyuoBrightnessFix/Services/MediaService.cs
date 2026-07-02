@@ -10,7 +10,8 @@ namespace RyuoBrightnessFix.Services;
 /// performs (verified by USB capture):
 /// <list type="number">
 /// <item><b>Transcode</b> the source video to the panel's format with ffmpeg
-/// (2240×1080, H.264 High/yuv420p, 30 fps, no audio, mp4).</item>
+/// (1920×960 — the decoder's width limit, matching ASUS's stock videos —
+/// H.264 High/yuv420p, 30 fps, no audio, mp4).</item>
 /// <item><b>Push</b> the file to <c>/sdcard/pcMedia</c> over adb (the file bytes travel on the
 /// device's ADB interface — MI_01 — not the HID control channel).</item>
 /// <item><b>Activate</b> it with a HID <c>waterBlockScreenId</c> config
@@ -110,9 +111,12 @@ public sealed class MediaService
 
     private (bool Ok, string Message) Transcode(string ffmpeg, string src, string dst, CancellationToken ct)
     {
-        // Scale into 2240×1080 preserving aspect (letterbox), 30fps, H.264 High, no audio.
-        string vf = "scale=2240:1080:force_original_aspect_ratio=decrease," +
-                    "pad=2240:1080:(ow-iw)/2:(oh-ih)/2:color=black,fps=30,format=yuv420p";
+        // Target 1920×960 — the panel is 2240×1080 but its RK3562 hardware decoder rejects
+        // anything wider than 1920 ("isCodecSupport error: support width = 1920" → black
+        // screen). ASUS's own stock videos are 1920×960 H.264 High yuv420p 30fps and the
+        // HomeUI upscales to the screen; match that exactly.
+        string vf = "scale=1920:960:force_original_aspect_ratio=decrease," +
+                    "pad=1920:960:(ow-iw)/2:(oh-ih)/2:color=black,fps=30,format=yuv420p";
         var args = new[]
         {
             "-y", "-hide_banner", "-loglevel", "error",

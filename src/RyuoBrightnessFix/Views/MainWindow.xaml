@@ -107,7 +107,7 @@
 
                     <Border Style="{StaticResource Card}">
                         <TextBlock Style="{StaticResource SubtleText}" TextWrapping="Wrap"
-                                   Text="Transcodes your video to the panel's 2240×1080 format, uploads it, and loops it full-screen — the same path ASUS Info Hub uses (no Info Hub needed). Needs ffmpeg (bundled) and ASUS's adb. The panel forgets its content when it reboots; the app re-asserts this video automatically every time it reconnects, so the screen never sits black. Note: at 100% brightness a dark video still looks dim — that's the footage, not the backlight." />
+                                   Text="Transcodes your video to the panel's playable format (1920×960 — its decoder's limit, same as ASUS's stock videos), uploads it, and loops it full-screen — the same path ASUS Info Hub uses (no Info Hub needed). Needs ffmpeg (bundled) and ASUS's adb. The panel forgets its content when it reboots; the app re-asserts this video automatically every time it reconnects, so the screen never sits black. Note: at 100% brightness a dark video still looks dim — that's the footage, not the backlight." />
                     </Border>
                 </StackPanel>
             </TabItem>
