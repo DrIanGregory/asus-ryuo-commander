@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Threading;
 using RyuoBrightnessFix.ViewModels;
 
@@ -25,6 +26,17 @@ public partial class MainWindow : Window
         LocationChanged += (_, _) => QueueSavePlacement();
         SizeChanged += (_, _) => QueueSavePlacement();
         StateChanged += (_, _) => QueueSavePlacement();
+
+        // The preview uses Manual behavior (required so the loop handler may call Play),
+        // and with Manual a new Source never opens by itself — kick playback on every
+        // binding change. Verified live: without this the preview stays black.
+        System.ComponentModel.DependencyPropertyDescriptor
+            .FromProperty(MediaElement.SourceProperty, typeof(MediaElement))
+            .AddValueChanged(PreviewPlayer, (_, _) =>
+            {
+                try { if (PreviewPlayer.Source is not null) PreviewPlayer.Play(); }
+                catch (Exception ex) { ShowPreviewError(ex); }
+            });
     }
 
     /// <summary>Close the window for real (used by the tray "Exit" / app shutdown).</summary>
@@ -149,14 +161,27 @@ public partial class MainWindow : Window
 
     private void PreviewPlayer_MediaOpened(object sender, RoutedEventArgs e)
     {
+        // LoadedBehavior is Manual (required so MediaEnded may call Play), so playback
+        // must be started explicitly once the media is ready.
         PreviewError.Visibility = Visibility.Collapsed;
+        try { PreviewPlayer.Play(); } catch (Exception ex) { ShowPreviewError(ex); }
     }
 
     private void PreviewPlayer_MediaEnded(object sender, RoutedEventArgs e)
     {
         // Loop the preview like the panel loops the real video.
-        PreviewPlayer.Position = TimeSpan.Zero;
-        PreviewPlayer.Play();
+        try
+        {
+            PreviewPlayer.Position = TimeSpan.Zero;
+            PreviewPlayer.Play();
+        }
+        catch (Exception ex) { ShowPreviewError(ex); }
+    }
+
+    private void ShowPreviewError(Exception ex)
+    {
+        PreviewError.Text = "Preview playback error: " + ex.Message;
+        PreviewError.Visibility = Visibility.Visible;
     }
 
     private void PreviewPlayer_MediaFailed(object? sender, ExceptionRoutedEventArgs e)

@@ -121,9 +121,11 @@
                                         <Border.Clip>
                                             <RectangleGeometry Rect="0,0,411,196" RadiusX="5" RadiusY="5" />
                                         </Border.Clip>
+                                        <!-- Manual behavior is REQUIRED: the loop handler calls
+                                             Play(), which WPF forbids for any other mode. -->
                                         <MediaElement x:Name="PreviewPlayer"
                                                       Source="{Binding PreviewSource}"
-                                                      LoadedBehavior="Play" UnloadedBehavior="Stop"
+                                                      LoadedBehavior="Manual" UnloadedBehavior="Stop"
                                                       IsMuted="True"
                                                       Stretch="{Binding PreviewStretch}"
                                                       MediaOpened="PreviewPlayer_MediaOpened"

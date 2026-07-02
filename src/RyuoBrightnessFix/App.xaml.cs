@@ -24,12 +24,14 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
-        // Capture any unhandled GUI exception so a crash leaves a diagnosable trail.
+        // Capture any unhandled GUI exception so it leaves a diagnosable trail — and keep
+        // running. This app's job is holding the panel's brightness/video alive; a glitch in
+        // a UI handler (e.g. a media preview hiccup) must degrade to a logged error, not kill
+        // the tray app and drop the panel into standby.
         DispatcherUnhandledException += (_, ev) =>
         {
             LogCrash(ev.Exception);
             ev.Handled = true;
-            Shutdown(1);
         };
         AppDomain.CurrentDomain.UnhandledException += (_, ev) => LogCrash(ev.ExceptionObject as Exception);
 
