@@ -3,6 +3,7 @@ using System.Runtime.Versioning;
 using System.Security.Principal;
 using System.Text;
 using LibreHardwareMonitor.Hardware;
+using Microsoft.Win32;
 using Serilog;
 
 namespace RyuoBrightnessFix.Services;
@@ -32,7 +33,59 @@ public sealed class SystemMetricsService : IDisposable
     private Computer? _computer;
     private bool _openFailed;
 
-    public SystemMetricsService(ILogger log) => _log = log.ForContext<SystemMetricsService>();
+    public SystemMetricsService(ILogger log)
+    {
+        _log = log.ForContext<SystemMetricsService>();
+
+        // A GPU driver reset (TDR) or a suspend/resume cycle invalidates the NVML handles
+        // LibreHardwareMonitor caches for NVIDIA sensors; the next poll then dies with an
+        // AccessViolationException inside nvml.dll, which .NET cannot catch — the process is
+        // killed outright (observed 2026-07-06: nvlddmkm driver-reset events immediately
+        // followed by a fatal crash in NvmlDeviceGetPowerUsage). The only in-process defence
+        // is to never poll through stale handles, so tear the sensor stack down on the events
+        // that invalidate them and let the next poll rebuild it from scratch.
+        SystemEvents.PowerModeChanged += OnPowerModeChanged;
+        SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+    }
+
+    private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
+    {
+        if (e.Mode is PowerModes.Suspend or PowerModes.Resume)
+            ResetAsync($"power event: {e.Mode}");
+    }
+
+    private void OnDisplaySettingsChanged(object? sender, EventArgs e)
+        => ResetAsync("display settings changed (possible GPU driver reset)");
+
+    // Reset off the SystemEvents broadcast thread: _sync can be held for seconds while a
+    // poll re-opens the sensor stack, and stalling that shared thread would freeze every
+    // other SystemEvents subscriber in the process.
+    private void ResetAsync(string reason) => Task.Run(() =>
+    {
+        try { Reset(reason); }
+        catch (Exception ex) { _log.Warning(ex, "Sensor reset ({Reason}) failed.", reason); }
+    });
+
+    /// <summary>
+    /// Close the sensor stack so the next poll reopens it with fresh driver handles. Also
+    /// clears the open-failed latch, giving sensors that failed to open a second chance
+    /// once the machine's state has changed.
+    /// </summary>
+    public void Reset(string reason)
+    {
+        lock (_sync)
+        {
+            _openFailed = false;
+            if (_computer is null) return;
+            try { _computer.Close(); }
+            catch (Exception ex)
+            {
+                _log.Warning(ex, "Closing hardware sensors during reset failed; dropping the instance anyway.");
+            }
+            _computer = null;
+            _log.Information("Hardware sensors closed ({Reason}); reopening on the next metrics poll.", reason);
+        }
+    }
 
     /// <summary>True when running elevated, i.e. kernel sensor access (CPU temp, fan RPM) works.</summary>
     public static bool HasKernelSensorAccess
@@ -364,6 +417,8 @@ public sealed class SystemMetricsService : IDisposable
 
     public void Dispose()
     {
+        SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+        SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
         lock (_sync)
         {
             try { _computer?.Close(); } catch { }

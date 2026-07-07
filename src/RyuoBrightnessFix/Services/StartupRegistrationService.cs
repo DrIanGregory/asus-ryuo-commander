@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Runtime.Versioning;
+using System.Security;
 using System.Security.Principal;
+using System.Text;
 using Microsoft.Win32;
 using RyuoBrightnessFix.Models;
 using Serilog;
@@ -17,6 +19,12 @@ namespace RyuoBrightnessFix.Services;
 /// access (CPU temperature, fan RPM for the Metrics feature) needs. The Run key is removed
 /// when the task exists so the app doesn't start twice.</item>
 /// </list>
+/// The task is registered from an XML definition rather than schtasks flags, because only
+/// XML can express the settings that matter here: restart the app if it crashes (up to
+/// 3 times, 1 minute apart — e.g. the uncatchable NVML access violation after a GPU driver
+/// reset), no execution time limit (the schtasks default kills the action after 72 h!),
+/// normal process priority (the schtasks default runs actions BelowNormal, which stutters
+/// the panel's video stream), and no battery conditions.
 /// So: enable "Start with Windows", run the app as administrator once, and every restart
 /// after that launches it elevated automatically.
 /// </summary>
@@ -152,18 +160,94 @@ public sealed class StartupRegistrationService
 
     private bool CreateOrUpdateElevatedTask()
     {
-        // ONLOGON + RL HIGHEST = start elevated at logon with no UAC prompt. /F refreshes the
-        // exe path on every elevated start, so stale build locations self-heal here too.
-        var (exit, _, err) = RunSchtasks(
-            $"/Create /TN \"{TaskName}\" /TR \"\\\"{ExePath}\\\"\" /SC ONLOGON /RL HIGHEST /F");
-        if (exit == 0)
+        // Register from XML (/F refreshes an existing task, so stale exe paths and old
+        // task definitions self-heal on every elevated start). See the class comment for
+        // why XML instead of /SC ONLOGON flags.
+        string xmlPath = Path.Combine(Path.GetTempPath(), TaskName + "-task.xml");
+        try
         {
-            _log.Information("Start with Windows (as administrator) -> {Exe} via Task Scheduler.", ExePath);
-            return true;
+            // Task Scheduler XML is conventionally UTF-16; the declaration must match the bytes.
+            File.WriteAllText(xmlPath, BuildTaskXml(), Encoding.Unicode);
+            var (exit, _, err) = RunSchtasks($"/Create /TN \"{TaskName}\" /XML \"{xmlPath}\" /F");
+            if (exit == 0)
+            {
+                _log.Information("Start with Windows (as administrator, restart-on-crash) -> {Exe} " +
+                                 "via Task Scheduler.", ExePath);
+                return true;
+            }
+            _log.Error("Creating the elevated autostart task failed (schtasks exit {Exit}): {Err}",
+                exit, err.Trim());
+            return false;
         }
-        _log.Error("Creating the elevated autostart task failed (schtasks exit {Exit}): {Err}",
-            exit, err.Trim());
-        return false;
+        catch (Exception ex)
+        {
+            _log.Error(ex, "Creating the elevated autostart task failed.");
+            return false;
+        }
+        finally
+        {
+            try { File.Delete(xmlPath); } catch { /* temp file left behind is harmless */ }
+        }
+    }
+
+    private static string BuildTaskXml()
+    {
+        // Scope both the trigger and the principal to the current user: the task fires only
+        // for this user's logon and runs in their interactive session with their highest
+        // (admin) token — elevated, no UAC prompt.
+        string user = SecurityElement.Escape(WindowsIdentity.GetCurrent().Name);
+        string exe = SecurityElement.Escape(ExePath);
+        string exeDir = SecurityElement.Escape(Path.GetDirectoryName(ExePath) ?? AppConstants.ExeDir);
+        return $"""
+            <?xml version="1.0" encoding="UTF-16"?>
+            <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+              <RegistrationInfo>
+                <Description>Starts {AppConstants.DisplayName} elevated at logon and restarts it if it crashes.</Description>
+              </RegistrationInfo>
+              <Triggers>
+                <LogonTrigger>
+                  <Enabled>true</Enabled>
+                  <UserId>{user}</UserId>
+                </LogonTrigger>
+              </Triggers>
+              <Principals>
+                <Principal id="Author">
+                  <UserId>{user}</UserId>
+                  <LogonType>InteractiveToken</LogonType>
+                  <RunLevel>HighestAvailable</RunLevel>
+                </Principal>
+              </Principals>
+              <Settings>
+                <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+                <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+                <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+                <AllowHardTerminate>true</AllowHardTerminate>
+                <StartWhenAvailable>false</StartWhenAvailable>
+                <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+                <IdleSettings>
+                  <StopOnIdleEnd>false</StopOnIdleEnd>
+                  <RestartOnIdle>false</RestartOnIdle>
+                </IdleSettings>
+                <AllowStartOnDemand>true</AllowStartOnDemand>
+                <Enabled>true</Enabled>
+                <Hidden>false</Hidden>
+                <RunOnlyIfIdle>false</RunOnlyIfIdle>
+                <WakeToRun>false</WakeToRun>
+                <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+                <Priority>5</Priority>
+                <RestartOnFailure>
+                  <Interval>PT1M</Interval>
+                  <Count>3</Count>
+                </RestartOnFailure>
+              </Settings>
+              <Actions Context="Author">
+                <Exec>
+                  <Command>{exe}</Command>
+                  <WorkingDirectory>{exeDir}</WorkingDirectory>
+                </Exec>
+              </Actions>
+            </Task>
+            """;
     }
 
     private bool DeleteElevatedTask()
