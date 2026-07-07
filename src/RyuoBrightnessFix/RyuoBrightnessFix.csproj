@@ -11,8 +11,11 @@
     <Nullable>enable</Nullable>
     <AssemblyName>RyuoBrightnessFix</AssemblyName>
     <RootNamespace>RyuoBrightnessFix</RootNamespace>
-    <!-- Shown in the status bar (click-to-copy); bump on every user-visible change. -->
-    <Version>1.8.0</Version>
+    <!-- Shown in the status bar (click-to-copy); bump the prefix on every user-visible
+         change. The suffix stamps the compile time into every build (deliberately
+         non-deterministic), so which binary is running is never ambiguous. -->
+    <VersionPrefix>1.9.0</VersionPrefix>
+    <VersionSuffix>build.$([System.DateTime]::Now.ToString(yyyyMMdd-HHmmss))</VersionSuffix>
     <!-- NOTE: InvariantGlobalization must stay OFF — WPF data binding needs a real
          culture (en-US) or it throws "Cannot find non-neutral culture" at render. -->
     <!-- The cyan-dragon emblem ("Ryuo" = dragon king) is the single app icon,

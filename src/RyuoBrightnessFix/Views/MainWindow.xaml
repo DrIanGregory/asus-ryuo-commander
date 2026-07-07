@@ -246,7 +246,7 @@
                                             <ComboBox ItemsSource="{Binding VideoScaleModes}"
                                                       SelectedItem="{Binding SelectedVideoScaleMode, Mode=TwoWay}"
                                                       Width="100" Margin="8,0,0,0" VerticalAlignment="Center"
-                                                      ToolTip="Fill = crop to cover the screen; Fit = letterbox; Stretch = distort" />
+                                                      ToolTip="Fill = crop to cover the screen; Fit = letterbox; Stretch = distort.&#x0a;Applies to the whole library — changing it re-encodes the videos from their original files." />
                                         </StackPanel>
                                     </Grid>
                                     <TextBlock Text="{Binding VideoStatus}" Style="{StaticResource SubtleText}"

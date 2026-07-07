@@ -235,6 +235,118 @@ public sealed class MediaService
         }
     }
 
+    /// <summary>
+    /// Recover source paths for library entries that predate provenance tracking (pre-1.9
+    /// settings recorded only the device file names). The transcode step has always logged
+    /// <c>Transcoding &lt;source&gt; -&gt; &lt;temp&gt;\ryuo_&lt;deviceName&gt;</c> at INFO,
+    /// so the app's own rolling logs are an authoritative record: scan them newest-first and
+    /// return the source seen for each requested device file (only when that source still
+    /// exists on disk). Entries whose log lines have rotated away stay unresolved. Static and
+    /// read-only — no device access; tolerates the live log file being open for writing.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string> RecoverSourcePathsFromLogs(
+        string logDir, IReadOnlyCollection<string> deviceFileNames, ILogger log)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var unresolved = new HashSet<string>(deviceFileNames, StringComparer.OrdinalIgnoreCase);
+            if (unresolved.Count == 0 || !Directory.Exists(logDir)) return result;
+
+            // ryuo-YYYYMMDD.log sorts chronologically by name; scan newest first.
+            var logFiles = Directory.GetFiles(logDir, "ryuo-*.log").OrderByDescending(f => f, StringComparer.Ordinal);
+            foreach (var logFile in logFiles)
+            {
+                if (unresolved.Count == 0) break;
+                try
+                {
+                    // Serilog holds the current day's file open for writing — share accordingly.
+                    using var stream = new FileStream(logFile, FileMode.Open, FileAccess.Read,
+                        FileShare.ReadWrite | FileShare.Delete);
+                    using var reader = new StreamReader(stream);
+                    while (reader.ReadLine() is { } line)
+                    {
+                        int tcIdx = line.IndexOf(" Transcoding ", StringComparison.Ordinal);
+                        if (tcIdx < 0) continue;
+                        int arrowIdx = line.LastIndexOf(" -> ", StringComparison.Ordinal);
+                        if (arrowIdx <= tcIdx) continue;
+
+                        string source = line[(tcIdx + " Transcoding ".Length)..arrowIdx].Trim();
+                        string dest = line[(arrowIdx + " -> ".Length)..].Trim();
+                        string destName = Path.GetFileName(dest);
+                        if (!destName.StartsWith("ryuo_", StringComparison.OrdinalIgnoreCase)) continue;
+                        string deviceName = destName["ryuo_".Length..];
+
+                        if (unresolved.Contains(deviceName) && !result.ContainsKey(deviceName) &&
+                            File.Exists(source))
+                        {
+                            result[deviceName] = source;
+                            unresolved.Remove(deviceName);
+                            if (unresolved.Count == 0) break;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    log.Warning(ex, "Provenance recovery could not read {LogFile}; continuing with the rest.", logFile);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            log.Warning(ex, "Provenance recovery from the logs failed.");
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Best-effort removal of a video this app previously pushed: the device-side copy in
+    /// /sdcard/pcMedia plus the local cache copies (video + thumbnail). Used when a
+    /// scale-mode re-encode replaces an upload under a new name, so dead files don't pile
+    /// up on the panel. Never throws; failures are logged (a cache file locked by the
+    /// preview player is cleaned up by the next cache prune).
+    /// </summary>
+    public async Task TryDeleteDeviceVideoAsync(string deviceFileName)
+    {
+        await Task.Run(() =>
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(deviceFileName) ||
+                    deviceFileName.Contains('/') || deviceFileName.Contains('\\'))
+                {
+                    _log.Warning("Refusing to delete a suspicious device file name: {File}", deviceFileName);
+                    return;
+                }
+                foreach (var f in new[]
+                         {
+                             Path.Combine(CacheDir, deviceFileName),
+                             Path.Combine(CacheDir, deviceFileName + ".png"),
+                         })
+                {
+                    try { if (File.Exists(f)) File.Delete(f); }
+                    catch (Exception ex) { _log.Debug(ex, "Cache delete of {File} failed (in use by the preview?).", f); }
+                }
+                var adb = FindAdb();
+                if (adb is null)
+                {
+                    _log.Debug("No adb — leaving the replaced video {File} on the device.", deviceFileName);
+                    return;
+                }
+                var (exit, _, err) = Run(adb, new[] { "shell", "rm", "-f", DeviceMediaDir + "/" + deviceFileName },
+                    AdbWorkingDir(adb), TimeSpan.FromSeconds(15), default);
+                if (exit == 0)
+                    _log.Information("Deleted the replaced panel video {File}.", deviceFileName);
+                else
+                    _log.Warning("Deleting {File} from the panel failed: {Err}", deviceFileName, Trim(err));
+            }
+            catch (Exception ex)
+            {
+                _log.Warning(ex, "Deleting the replaced panel video {File} failed.", deviceFileName);
+            }
+        });
+    }
+
     // ---------------------------------------------------------------- steps
 
     private (bool Ok, string Message) Transcode(

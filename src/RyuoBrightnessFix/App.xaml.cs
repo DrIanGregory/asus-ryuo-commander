@@ -79,8 +79,8 @@ public partial class App : Application
             .WriteTo.UiSink(_uiSink)
             .CreateLogger();
 
-        Log.Information("===== {App} starting. Debug logging = {Debug}. Log folder: {Dir} =====",
-            AppConstants.DisplayName, settings.DebugLogging, logDir);
+        Log.Information("===== {App} {Version} starting. Debug logging = {Debug}. Log folder: {Dir} =====",
+            AppConstants.DisplayName, AppConstants.Version, settings.DebugLogging, logDir);
 
         var startup = new StartupRegistrationService(Log.Logger);
 

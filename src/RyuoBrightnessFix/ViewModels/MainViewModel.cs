@@ -87,9 +87,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         RemoveVideoCommand = new RelayCommand(RemovePlaylistItem, () => SelectedPlaylistItem is not null && !VideoBusy);
         MoveVideoUpCommand = new RelayCommand(() => MovePlaylistItem(-1), () => CanMovePlaylistItem(-1));
         MoveVideoDownCommand = new RelayCommand(() => MovePlaylistItem(+1), () => CanMovePlaylistItem(+1));
-        foreach (var f in settings.PanelVideoFiles)
+        RecoverLegacyProvenance(settings);   // pre-1.9 entries: pull source paths from our own logs
+        foreach (var e in settings.PanelVideos ?? new List<PanelVideoEntry>())
         {
-            var item = new PlaylistItem(f);
+            var item = new PlaylistItem(e.File, e.SourcePath, e.ScaleMode);
             Playlist.Add(item);
             LoadThumbnail(item);
         }
@@ -106,6 +107,56 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         RefreshDevice();
         LoadPreviewVideo();
         RefreshStartupModeNote();
+
+        // Converge the library with the persisted scale mode. Entries can lag behind the
+        // setting when a mode change couldn't re-encode at the time (pre-1.9 data whose
+        // provenance was only just recovered, a missing device, an app exit mid-change).
+        // Only fires when something is actually re-encodable, so a fresh install with the
+        // stock preset stays silent.
+        if (Playlist.Any(p => p.BakedScaleMode != _settings.VideoScaleMode &&
+                              p.SourcePath is not null && System.IO.File.Exists(p.SourcePath)))
+            _ = ReencodeLibraryForScaleModeAsync();
+    }
+
+    /// <summary>
+    /// Fill in missing source paths for library entries recorded before v1.9 tracked
+    /// provenance, by scanning the app's own logs (the transcode step has always logged
+    /// source → device-file). Recovered entries keep a null baked mode — "unknown" — so
+    /// the convergence pass re-encodes them to the current scale mode. Persisted
+    /// immediately so later launches skip the scan.
+    /// </summary>
+    private void RecoverLegacyProvenance(AppSettings settings)
+    {
+        try
+        {
+            var entries = settings.PanelVideos;
+            if (entries is null) return;
+            // Only our own timestamped uploads can appear in the transcode logs — stock
+            // preset names (e.g. RYUO_IV_HW_Info_01.mp4) never will, so don't scan for them.
+            var missing = entries
+                .Where(e => e.SourcePath is null &&
+                            System.Text.RegularExpressions.Regex.IsMatch(
+                                e.File, @"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}-\d{3}\.mp4$"))
+                .Select(e => e.File)
+                .ToList();
+            if (missing.Count == 0) return;
+
+            var recovered = MediaService.RecoverSourcePathsFromLogs(AppConstants.LogDir, missing, _log);
+            if (recovered.Count == 0) return;
+
+            foreach (var e in entries)
+            {
+                if (e.SourcePath is null && recovered.TryGetValue(e.File, out var src))
+                    e.SourcePath = src;
+            }
+            SaveSettings();
+            _log.Information("Recovered source paths for {Count} pre-1.9 library entrie(s) from the logs.",
+                recovered.Count);
+        }
+        catch (Exception ex)
+        {
+            _log.Warning(ex, "Legacy provenance recovery failed; those entries need re-adding to re-scale.");
+        }
     }
 
     // ---------------------------------------------------------------- tabs & status
@@ -447,13 +498,27 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     // ---------------------------------------------------------------- panel video / media library
 
-    /// <summary>One entry in the media library strip: an on-device video + its thumbnail.</summary>
+    /// <summary>One entry in the media library strip: an on-device video + its thumbnail.
+    /// Immutable apart from the thumbnail — a scale-mode re-encode replaces the whole item.</summary>
     public sealed class PlaylistItem : ObservableObject
     {
-        public PlaylistItem(string file) => File = file;
+        public PlaylistItem(string file, string? sourcePath = null, VideoScaleMode? bakedScaleMode = null)
+        {
+            File = file;
+            SourcePath = sourcePath;
+            BakedScaleMode = bakedScaleMode;
+        }
 
         /// <summary>Device-side file name (pcMedia, or a stock preset name).</summary>
         public string File { get; }
+
+        /// <summary>The local file this entry was transcoded from; null when unknown (a stock
+        /// preset, or added before v1.9 tracked provenance). Entries without a usable source
+        /// cannot be re-encoded when the scale mode changes — only re-added.</summary>
+        public string? SourcePath { get; }
+
+        /// <summary>The scale mode baked into the device file at transcode time; null when unknown.</summary>
+        public VideoScaleMode? BakedScaleMode { get; }
 
         private string? _thumbnail;
         /// <summary>Local PNG path for the strip; null while extraction is pending.</summary>
@@ -577,6 +642,123 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _settings.VideoScaleMode = value;
             SaveSettings();
             OnPropertyChanged();
+            // The mode is baked into the transcoded pixels, so a change must re-encode
+            // the library — otherwise the ComboBox silently does nothing (the v1.8 bug).
+            _ = ReencodeLibraryForScaleModeAsync();
+        }
+    }
+
+    // ------------------------------------------------ scale-mode re-encode
+
+    private int _scaleModeReencodeActive;   // 0/1: one runner at a time (it converges on its own)
+
+    /// <summary>
+    /// Re-encode the media library after a scale-mode change. Every entry whose recorded
+    /// source file is still on disk is re-transcoded with the new mode, uploaded under a
+    /// fresh name, and swapped into the playlist in place (the replaced upload and its
+    /// cache copies are deleted). Entries without a usable source — stock presets, pre-1.9
+    /// entries, moved files — are reported; they can only be re-added. Safe against rapid
+    /// ComboBox flipping: a single runner re-reads the current setting before each video,
+    /// so it always converges on the latest choice.
+    /// </summary>
+    private async Task ReencodeLibraryForScaleModeAsync()
+    {
+        if (Interlocked.Exchange(ref _scaleModeReencodeActive, 1) == 1) return;
+        try
+        {
+            // Let an in-flight Add finish rather than running two ffmpeg/adb pipelines at
+            // once (the ComboBox stays enabled while the library is busy).
+            while (VideoBusy) await Task.Delay(250);
+
+            if (Playlist.Count > 0 && Playlist.All(p => p.BakedScaleMode == _settings.VideoScaleMode))
+            {
+                VideoStatus = $"Scale mode {_settings.VideoScaleMode} — the library already matches; " +
+                              "new videos will use it too.";
+                return;
+            }
+            bool anyReencodable = Playlist.Any(p =>
+                p.BakedScaleMode != _settings.VideoScaleMode &&
+                p.SourcePath is not null && System.IO.File.Exists(p.SourcePath));
+            if (anyReencodable && !_media.FfmpegAvailable)
+            {
+                VideoStatus = "ffmpeg not found — see tools\\fetch-ffmpeg.ps1 (put ffmpeg.exe next to the app).";
+                _log.Warning("Scale-mode re-encode aborted: ffmpeg not found.");
+                return;
+            }
+            if (anyReencodable && !_media.AdbAvailable)
+            {
+                VideoStatus = "adb not found — install 'ASUS Info Hub - ROG RYUO IV'.";
+                _log.Warning("Scale-mode re-encode aborted: adb not found.");
+                return;
+            }
+
+            VideoBusy = true;
+            int reencoded = 0;
+            var failed = new List<string>();
+            var replacedUploads = new List<string>();
+            while (true)
+            {
+                var mode = _settings.VideoScaleMode;   // re-read: the user may have flipped again
+                var item = Playlist.FirstOrDefault(p =>
+                    p.BakedScaleMode != mode && !failed.Contains(p.File) &&
+                    p.SourcePath is not null && System.IO.File.Exists(p.SourcePath));
+                if (item is null) break;
+
+                _log.Information("Re-encoding {File} from {Source} as {Mode}.", item.File, item.SourcePath, mode);
+                var progress = new Progress<string>(s => VideoStatus = $"{item.File}: {s}");
+                var (ok, msg, deviceName) = await _media.PrepareVideoAsync(item.SourcePath!, mode, progress);
+
+                int index = Playlist.IndexOf(item);
+                if (!ok || deviceName is null || index < 0)
+                {
+                    failed.Add(item.File);
+                    _log.Error("Re-encoding {File} as {Mode} failed: {Msg}", item.File, mode, msg);
+                    continue;
+                }
+
+                var replacement = new PlaylistItem(deviceName, item.SourcePath, mode);
+                bool wasSelected = ReferenceEquals(SelectedPlaylistItem, item);
+                Playlist[index] = replacement;                       // drops the ListBox selection…
+                if (wasSelected) SelectedPlaylistItem = replacement; // …reselect (also refreshes the preview)
+                LoadThumbnail(replacement);
+                SavePlaylist();
+                replacedUploads.Add(item.File);
+                reencoded++;
+            }
+
+            if (reencoded > 0)
+            {
+                ApplyPlaylist();
+                LoadPreviewVideo();
+            }
+            // Clean up the replaced uploads only after the panel has been pointed at the
+            // new files — deleting earlier could yank a video out from under a running
+            // Cycle/Shuffle rotation while later entries are still transcoding.
+            foreach (var old in replacedUploads)
+                _ = _media.TryDeleteDeviceVideoAsync(old);
+
+            var finalMode = _settings.VideoScaleMode;
+            int notReencodable = Playlist.Count(p => p.BakedScaleMode != finalMode &&
+                (p.SourcePath is null || !System.IO.File.Exists(p.SourcePath)));
+            var parts = new List<string>();
+            if (reencoded > 0) parts.Add($"Re-encoded {reencoded} video(s) as {finalMode}.");
+            if (failed.Count > 0) parts.Add($"{failed.Count} failed — see the log.");
+            if (notReencodable > 0)
+                parts.Add($"{notReencodable} video(s) can't be re-encoded (a stock video, or its original " +
+                          $"file is unknown or moved) — remove and re-add them to apply {finalMode}.");
+            if (parts.Count == 0)
+                parts.Add($"Scale mode {finalMode} saved — new videos will use it.");
+            VideoStatus = string.Join(" ", parts);
+        }
+        catch (Exception ex)
+        {
+            VideoStatus = "Error re-encoding the library: " + ex.Message;
+            _log.Error(ex, "Scale-mode re-encode failed.");
+        }
+        finally
+        {
+            VideoBusy = false;
+            Interlocked.Exchange(ref _scaleModeReencodeActive, 0);
         }
     }
 
@@ -628,6 +810,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void SavePlaylist()
     {
+        _settings.PanelVideos = Playlist
+            .Select(p => new PanelVideoEntry { File = p.File, SourcePath = p.SourcePath, ScaleMode = p.BakedScaleMode })
+            .ToList();
+        // Mirror of the plain name list: session re-assert reads it, and a rollback to a
+        // pre-1.9 build still finds its playlist.
         _settings.PanelVideoFiles = Playlist.Select(p => p.File).ToList();
         SaveSettings();
         OnPropertyChanged(nameof(ActiveVideoDisplay));
@@ -718,18 +905,24 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (dlg.ShowDialog() != true) return;
         string path = dlg.FileName;
 
+        // A scale-mode re-encode may have started while the file dialog was open —
+        // wait for it rather than running two ffmpeg/adb pipelines at once.
+        while (VideoBusy) await Task.Delay(250);
+
         VideoBusy = true;
         VideoStatus = "Starting…";
         _log.Information("Adding panel video from {Path}", path);
         try
         {
+            var mode = SelectedVideoScaleMode;
             var progress = new Progress<string>(s => VideoStatus = s);
-            var (ok, msg, deviceName) = await _media.PrepareVideoAsync(path, SelectedVideoScaleMode, progress);
+            var (ok, msg, deviceName) = await _media.PrepareVideoAsync(path, mode, progress);
             if (ok && deviceName is not null)
             {
                 // Join the library and activate; persisted so it survives panel reboots
-                // (OnSessionOpened re-asserts the whole playlist on reconnect).
-                var item = new PlaylistItem(deviceName);
+                // (OnSessionOpened re-asserts the whole playlist on reconnect). Source path
+                // and mode are recorded so a later scale-mode change can re-encode it.
+                var item = new PlaylistItem(deviceName, path, mode);
                 Playlist.Add(item);
                 LoadThumbnail(item);
                 SavePlaylist();

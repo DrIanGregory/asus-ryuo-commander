@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace RyuoBrightnessFix.Models;
 
@@ -39,8 +40,20 @@ public sealed class AppSettings
     /// stock preset names from /sdcard/pcMediaPreset). Re-asserted whenever the HID session
     /// reopens, because the panel forgets its screen config when it reboots and would
     /// otherwise sit on a black screen. Defaults to ASUS's stock hardware-info video.
+    /// Since v1.9 this is a mirror of <see cref="PanelVideos"/> (kept in sync on every save
+    /// so a rollback to an older build still finds its playlist); readers should prefer
+    /// <see cref="PanelVideos"/>.
     /// </summary>
     public List<string> PanelVideoFiles { get; set; } = new() { "RYUO_IV_HW_Info_01.mp4" };
+
+    /// <summary>
+    /// The media library with provenance: each entry pairs the on-device file name with the
+    /// source path and scale mode it was transcoded with, so a scale-mode change can
+    /// re-encode the library from the originals. Null only while parsing a pre-1.9 settings
+    /// file; <see cref="Load"/> migrates it from <see cref="PanelVideoFiles"/> (with unknown
+    /// provenance) and never returns it null.
+    /// </summary>
+    public List<PanelVideoEntry>? PanelVideos { get; set; }
 
     /// <summary>Playlist mode (firmware enum, from Info Hub's source): "Single" loops the
     /// first entry, "Cycle" plays the list in order, "Random" shuffles.</summary>
@@ -52,9 +65,11 @@ public sealed class AppSettings
     /// <summary>Metric widget value color (hex), part of the panel screen config.</summary>
     public string MetricContentColor { get; set; } = "#25cfe5";
 
-    /// <summary>How to fit a source video into the panel frame when setting a new video.
-    /// Fill = crop to cover the screen (default), Fit = letterbox, Stretch = distort.</summary>
-    [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter))]
+    /// <summary>How a source video is fitted into the panel frame: Fill = crop to cover the
+    /// screen (default), Fit = letterbox, Stretch = distort. Applies to the whole library —
+    /// changing it re-encodes every entry whose source file is recorded in
+    /// <see cref="PanelVideos"/> (the mode is baked into the transcoded pixels).</summary>
+    [JsonConverter(typeof(JsonStringEnumConverter))]
     public VideoScaleMode VideoScaleMode { get; set; } = VideoScaleMode.Fill;
 
     // --- Metrics ---
@@ -91,6 +106,9 @@ public sealed class AppSettings
         WriteIndented = true,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         PropertyNameCaseInsensitive = true,
+        // Enums as their names, including the nullable PanelVideoEntry.ScaleMode
+        // (a per-property [JsonConverter] attribute can't wrap a nullable enum).
+        Converters = { new JsonStringEnumConverter() },
     };
 
     public static string DefaultPath => Path.Combine(AppConstants.AppDataDir, AppConstants.SettingsFileName);
@@ -117,7 +135,7 @@ public sealed class AppSettings
                     }
                     loaded.PanelVideoFiles ??= new List<string>();
                     loaded.PanelVideoFile = null;
-                    return loaded;
+                    return Normalize(loaded);
                 }
             }
         }
@@ -125,7 +143,21 @@ public sealed class AppSettings
         {
             // Corrupt/unreadable settings should never block startup — fall back to defaults.
         }
-        return new AppSettings();
+        return Normalize(new AppSettings());
+    }
+
+    /// <summary>Establish the v1.9 invariant: <see cref="PanelVideos"/> is never null and
+    /// <see cref="PanelVideoFiles"/> mirrors it. Pre-1.9 settings files (and fresh defaults)
+    /// only carry the plain name list — migrate it into entries with unknown provenance.</summary>
+    private static AppSettings Normalize(AppSettings s)
+    {
+        s.PanelVideoFiles ??= new List<string>();
+        s.PanelVideos ??= s.PanelVideoFiles
+            .Select(f => new PanelVideoEntry { File = f })
+            .ToList();
+        s.PanelVideos.RemoveAll(e => e is null || string.IsNullOrWhiteSpace(e.File));
+        s.PanelVideoFiles = s.PanelVideos.Select(e => e.File).ToList();
+        return s;
     }
 
     public void Save(string? path = null)
