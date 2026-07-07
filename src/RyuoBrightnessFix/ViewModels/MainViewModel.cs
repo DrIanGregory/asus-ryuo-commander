@@ -1390,11 +1390,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         StopResumeMonitor();
         if (!AutoFixOnResume) return;
 
-        // On resume, restore the target brightness immediately (the keep-alive also
-        // re-applies within a few seconds, but this gives a prompt kick on wake).
-        // Read the slider value live so moving it takes effect without a restart.
-        _resumeMonitor = new ResumeMonitor(10_000, _log,
-            onResume: _ => _backlight.SetPercent(BrightnessPercent).Ok);
+        // On resume, restore the panel immediately. Read the slider value live so moving
+        // it takes effect without a restart.
+        _resumeMonitor = new ResumeMonitor(10_000, _log, onResume: RestorePanelAfterResume);
         _resumeMonitor.Start();
         _log.Information("Resume monitor ON (restore to {Target}% after wake).", BrightnessPercent);
     }
@@ -1403,6 +1401,24 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         _resumeMonitor?.Dispose();
         _resumeMonitor = null;
+    }
+
+    /// <summary>
+    /// Restore the panel on wake. While the PC sleeps the host stops reading the panel's HID
+    /// stream, so its firmware nulls the host→device handle: after wake our writes "succeed"
+    /// but are silently discarded and the panel sits dim — the state that used to force a manual
+    /// app restart, because only a brand-new HID handle re-establishes delivery. So when the
+    /// keep-alive hold is running, recycle its session first (fresh handle — the in-process
+    /// equivalent of restarting the app; this also re-asserts the playlist via SessionOpened),
+    /// then apply the target brightness over that fresh handle so it lands regardless of the
+    /// SessionOpened re-assert throttle. Without a hold, a one-shot SetPercent already opens its
+    /// own fresh handle, so a plain write suffices.
+    /// </summary>
+    private bool RestorePanelAfterResume(CancellationToken token)
+    {
+        if (KeepBrightnessAlive && CanControlDevice && _backlight.RecycleHold())
+            _log.Information("Resume: recycled the HID session for a fresh handle before re-applying.");
+        return _backlight.SetPercent(BrightnessPercent).Ok;
     }
 
     // ---------------------------------------------------------------- keep-alive

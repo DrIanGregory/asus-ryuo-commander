@@ -109,6 +109,27 @@ public sealed class BacklightService : IDisposable
     }
 
     /// <summary>
+    /// Force a fresh HID handle: close the current hold session and immediately reopen it so the
+    /// panel firmware sees a brand-new host→device pipe. Whenever the host stops reading the
+    /// device's input stream — the PC sleeping does exactly this — the firmware nulls its own HID
+    /// handle, after which our writes "succeed" locally but are silently discarded and the panel
+    /// stays dim. A stale handle can't be un-wedged in place; only a fresh open re-establishes
+    /// delivery, which is precisely what restarting the whole app does. Reopening fires
+    /// <see cref="SessionOpened"/>, so the saved playlist + brightness get re-asserted over the new
+    /// handle. No-op (returns false) when no hold is wanted; returns true if a fresh session is open.
+    /// </summary>
+    public bool RecycleHold()
+    {
+        if (!WantHold()) return false;
+        CloseSession();
+        lock (_sync)
+        {
+            if (_disposed || !_holdWanted) return false;
+            return EnsureOpenLocked() is not null;
+        }
+    }
+
+    /// <summary>
     /// How long since the device last sent us an input report over the hold session, or null
     /// when no session is open. A healthy panel streams reports continuously (~10/s); writes
     /// that "succeed" while this grows large mean the panel firmware has wedged its own HID
