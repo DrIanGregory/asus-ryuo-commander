@@ -14,7 +14,7 @@
     <!-- Shown in the status bar (click-to-copy); bump the prefix on every user-visible
          change. The suffix stamps the compile time into every build (deliberately
          non-deterministic), so which binary is running is never ambiguous. -->
-    <VersionPrefix>1.9.1</VersionPrefix>
+    <VersionPrefix>1.9.2</VersionPrefix>
     <VersionSuffix>build.$([System.DateTime]::Now.ToString(yyyyMMdd-HHmmss))</VersionSuffix>
     <!-- NOTE: InvariantGlobalization must stay OFF — WPF data binding needs a real
          culture (en-US) or it throws "Cannot find non-neutral culture" at render. -->

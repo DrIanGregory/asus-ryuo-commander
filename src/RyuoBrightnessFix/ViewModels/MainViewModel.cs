@@ -1416,6 +1416,27 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     /// </summary>
     private bool RestorePanelAfterResume(CancellationToken token)
     {
+        // Sleep reliably wedges the panel firmware's OWN HID handle: after wake it silently
+        // discards brightness writes while still streaming input reports back, so neither a write
+        // "success" nor the input-silence wedge detector (CheckForWedgedPanel) can see it, and a
+        // fresh host-side handle (RecycleHold) alone does not always clear it. The one verified
+        // un-wedge is restarting the panel's SerialService over adb — that re-establishes the
+        // device-side hidg0 handle so our writes land again. Do it on every resume (deterministic:
+        // no fragile detection that this failure mode defeats), then take a fresh host handle and
+        // re-apply. When ASUS's adb isn't installed the restart is unavailable and we degrade to
+        // the recycle-and-reapply that earlier builds shipped.
+        var (recovered, msg) = _recovery.TryRestartSerialService();
+        if (recovered)
+        {
+            _log.Information("Resume: restarted the panel SerialService over adb to clear the post-sleep HID wedge.");
+            // am startservice is async; give the firmware a moment to re-open hidg0 before we write.
+            token.WaitHandle.WaitOne(TimeSpan.FromSeconds(2.5));
+        }
+        else
+        {
+            _log.Warning("Resume: adb panel recovery unavailable ({Msg}); falling back to a HID handle recycle.", msg);
+        }
+
         if (KeepBrightnessAlive && CanControlDevice && _backlight.RecycleHold())
             _log.Information("Resume: recycled the HID session for a fresh handle before re-applying.");
         return _backlight.SetPercent(BrightnessPercent).Ok;

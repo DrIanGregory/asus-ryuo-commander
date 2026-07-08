@@ -33,6 +33,7 @@ public sealed class PanelRecoveryService
 
     private readonly ILogger _log;
     private bool _adbMissingLogged;
+    private bool _adbDllMissingLogged;
 
     public PanelRecoveryService(ILogger log) => _log = log.ForContext<PanelRecoveryService>();
 
@@ -42,6 +43,35 @@ public sealed class PanelRecoveryService
         foreach (var candidate in AdbCandidates)
         {
             try { if (File.Exists(candidate)) return candidate; }
+            catch { /* inaccessible path — try the next */ }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// adb.exe's directories to add to the child process's DLL search path: its own folder plus
+    /// the install root one level up. ASUS puts adb.exe in bin\ but AdbWinApi.dll in the parent,
+    /// so both must be searchable for adb to load.
+    /// </summary>
+    private static IEnumerable<string> AdbDllSearchDirs(string adbPath)
+    {
+        string? dir = Path.GetDirectoryName(adbPath);
+        if (dir is null) yield break;
+        yield return dir;
+        string? parent = Path.GetDirectoryName(dir);
+        if (parent is not null) yield return parent;
+    }
+
+    /// <summary>Locate adb.exe's AdbWinApi.dll dependency in its folder or the install root, or null.</summary>
+    private static string? FindAdbWinApi(string adbPath)
+    {
+        foreach (var dir in AdbDllSearchDirs(adbPath))
+        {
+            try
+            {
+                string candidate = Path.Combine(dir, "AdbWinApi.dll");
+                if (File.Exists(candidate)) return candidate;
+            }
             catch { /* inaccessible path — try the next */ }
         }
         return null;
@@ -64,6 +94,19 @@ public sealed class PanelRecoveryService
                              "Panel firmware recovery is unavailable; power-cycle the PC to recover the panel.");
             }
             return (false, "ASUS adb.exe not found; cannot restart the panel's SerialService.");
+        }
+
+        // ASUS's installer ships adb.exe in bin\ but its native dependency AdbWinApi.dll (and
+        // AdbWinUsbApi.dll) in the install ROOT one level up. The Windows loader searches adb.exe's
+        // own directory, never the parent, so adb dies with 0xC0000135 (DLL not found) and recovery
+        // silently never works. Warn loudly if the dependency is genuinely absent — RunAdb still
+        // puts the parent dir on PATH so the split layout resolves.
+        if (FindAdbWinApi(adb) is null && !_adbDllMissingLogged)
+        {
+            _adbDllMissingLogged = true;
+            _log.Warning("AdbWinApi.dll not found next to adb.exe ({AdbDir}) or in its parent folder. " +
+                         "adb will fail to load; reinstall 'ASUS Info Hub - ROG RYUO IV' to restore it.",
+                Path.GetDirectoryName(adb));
         }
 
         // One shell invocation so stop + start behave atomically from adb's point of view.
@@ -93,6 +136,18 @@ public sealed class PanelRecoveryService
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
             };
+
+            // ASUS's split layout (adb.exe in bin\, AdbWinApi.dll in the parent) means the loader
+            // can't find the DLL from adb.exe's own directory. Prepend both directories to the
+            // child's PATH so the native dependency resolves either way; without this adb exits
+            // 0xC0000135 and every recovery attempt fails silently.
+            string dllDirs = string.Join(Path.PathSeparator.ToString(), AdbDllSearchDirs(adbPath));
+            string existingPath = psi.Environment.TryGetValue("PATH", out var p) && !string.IsNullOrEmpty(p)
+                ? p
+                : Environment.GetEnvironmentVariable("PATH") ?? "";
+            psi.Environment["PATH"] = existingPath.Length == 0
+                ? dllDirs
+                : dllDirs + Path.PathSeparator + existingPath;
 
             using var proc = Process.Start(psi);
             if (proc is null)
