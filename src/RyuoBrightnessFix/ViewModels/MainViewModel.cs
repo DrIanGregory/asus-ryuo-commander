@@ -1091,12 +1091,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public string MetricsAccessNote =>
         SystemMetricsService.HasKernelSensorAccess
-            ? ""
+            ? "GPU metrics are disabled for stability after sleep/display-driver resets."
             : "Running without administrator rights: CPU temperature/voltage, motherboard " +
-              "temperature and fan speeds read 0. Loads, GPU, memory, disk and network still work. " +
-              "Run the app as administrator for the full set.";
+              "temperature and fan speeds read 0. GPU metrics are disabled for stability; " +
+              "loads, memory, disk and network still work. Run the app as administrator " +
+              "for CPU and fan sensors.";
 
-    public bool ShowMetricsAccessNote => !SystemMetricsService.HasKernelSensorAccess;
+    public bool ShowMetricsAccessNote => true;
 
     public string MetricTitleColor
     {

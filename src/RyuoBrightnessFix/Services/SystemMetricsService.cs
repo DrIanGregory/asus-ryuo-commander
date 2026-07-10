@@ -22,8 +22,8 @@ namespace RyuoBrightnessFix.Services;
 ///
 /// Elevation note: CPU temperature/voltage and motherboard fan RPMs come from ring-0 sensor
 /// access, which Windows only grants to elevated processes. Without admin those values read 0
-/// and <see cref="HasKernelSensorAccess"/> is false — GPU stats, loads, memory, disk and
-/// network still work.
+/// and <see cref="HasKernelSensorAccess"/> is false. GPU metrics are intentionally disabled:
+/// the NVIDIA/native path can terminate the process after sleep or driver resets.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class SystemMetricsService : IDisposable
@@ -32,18 +32,17 @@ public sealed class SystemMetricsService : IDisposable
     private readonly object _sync = new();
     private Computer? _computer;
     private bool _openFailed;
+    private bool _gpuDisabledLogged;
 
     public SystemMetricsService(ILogger log)
     {
         _log = log.ForContext<SystemMetricsService>();
 
-        // A GPU driver reset (TDR) or a suspend/resume cycle invalidates the NVML handles
-        // LibreHardwareMonitor caches for NVIDIA sensors; the next poll then dies with an
-        // AccessViolationException inside nvml.dll, which .NET cannot catch — the process is
-        // killed outright (observed 2026-07-06: nvlddmkm driver-reset events immediately
-        // followed by a fatal crash in NvmlDeviceGetPowerUsage). The only in-process defence
-        // is to never poll through stale handles, so tear the sensor stack down on the events
-        // that invalidate them and let the next poll rebuild it from scratch.
+        // A GPU driver reset (TDR) or a suspend/resume cycle can invalidate the native GPU
+        // handles LibreHardwareMonitor uses. The next GPU poll can then die with an
+        // AccessViolationException below managed code; .NET cannot catch it and the tray app
+        // is killed outright. We still reset the sensor stack on these events, but the stable
+        // fix is to avoid LHM's GPU path entirely in this always-on tray process.
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
     }
@@ -113,7 +112,7 @@ public sealed class SystemMetricsService : IDisposable
                 var computer = new Computer
                 {
                     IsCpuEnabled = true,
-                    IsGpuEnabled = true,
+                    IsGpuEnabled = false,
                     IsMemoryEnabled = true,
                     IsMotherboardEnabled = true,
                     IsStorageEnabled = true,
@@ -121,6 +120,11 @@ public sealed class SystemMetricsService : IDisposable
                 };
                 computer.Open();
                 _computer = computer;
+                if (!_gpuDisabledLogged)
+                {
+                    _gpuDisabledLogged = true;
+                    _log.Warning("GPU metrics disabled to avoid native LibreHardwareMonitor/NVIDIA access-violation crashes after sleep or driver resets.");
+                }
                 _log.Information("Hardware sensors opened (kernel sensor access: {Admin}).",
                     HasKernelSensorAccess);
                 return true;

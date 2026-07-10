@@ -45,6 +45,7 @@ public sealed class BacklightService : IDisposable
 
     private readonly ILogger _log;
     private readonly object _sync = new();
+    private readonly object _writeSync = new();
     private int _seq = Environment.TickCount & 0x7FFFFFFF;
 
     private HidStream? _stream;
@@ -121,11 +122,14 @@ public sealed class BacklightService : IDisposable
     public bool RecycleHold()
     {
         if (!WantHold()) return false;
-        CloseSession();
-        lock (_sync)
+        lock (_writeSync)
         {
-            if (_disposed || !_holdWanted) return false;
-            return EnsureOpenLocked() is not null;
+            CloseSessionCore();
+            lock (_sync)
+            {
+                if (_disposed || !_holdWanted) return false;
+                return EnsureOpenLocked() is not null;
+            }
         }
     }
 
@@ -254,72 +258,75 @@ public sealed class BacklightService : IDisposable
     /// </summary>
     private (bool Ok, string Message) SendFrame(byte[] frame, string what)
     {
-        // Fast path: write over the open hold session. If a hold is wanted but the session
-        // died (earlier write failure, device re-enumerated over sleep), reopen it here —
-        // the read-drain is what keeps the panel out of standby, so a one-shot fallback is
-        // never a substitute for the session.
-        HidStream? held;
-        int heldLen;
-        lock (_sync)
+        lock (_writeSync)
         {
-            held = _holdWanted ? EnsureOpenLocked() : _stream;
-            heldLen = _outputReportLength;
-        }
-        if (held is not null)
-        {
+            // Fast path: write over the open hold session. If a hold is wanted but the session
+            // died (earlier write failure, device re-enumerated over sleep), reopen it here —
+            // the read-drain is what keeps the panel out of standby, so a one-shot fallback is
+            // never a substitute for the session.
+            HidStream? held;
+            int heldLen;
+            lock (_sync)
+            {
+                held = _holdWanted ? EnsureOpenLocked() : _stream;
+                heldLen = _outputReportLength;
+            }
+            if (held is not null)
+            {
+                try
+                {
+                    WriteReport(held, frame, heldLen);
+                    return (true, "ok");
+                }
+                catch (Exception ex)
+                {
+                    _log.Error(ex, "HID write over hold session failed ({What}); reopening.", what);
+                    CloseSessionCore();
+                }
+
+                // Reopen the hold session once and retry over it, so the read-drain comes back
+                // immediately rather than waiting for the next keep-alive tick.
+                if (WantHold())
+                {
+                    lock (_sync)
+                    {
+                        held = EnsureOpenLocked();
+                        heldLen = _outputReportLength;
+                    }
+                    if (held is not null)
+                    {
+                        try
+                        {
+                            WriteReport(held, frame, heldLen);
+                            return (true, "ok (session reopened)");
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.Error(ex, "HID write failed again over the reopened session ({What}).", what);
+                            CloseSessionCore();
+                            // fall through to a one-shot attempt
+                        }
+                    }
+                }
+            }
+
+            // One-shot path (no hold session, or the held write just failed).
+            var dev = FindDevice();
+            if (dev is null)
+                return (false, "Ryuo IV LCD not found on USB (VID 0B05 / PID 1C76, interface MI_00).");
             try
             {
-                WriteReport(held, frame, heldLen);
-                return (true, "ok");
+                var options = new OpenConfiguration();
+                options.SetOption(OpenOption.Interruptible, true);
+                using HidStream stream = dev.Open(options);
+                WriteReport(stream, frame, SafeLen(dev.GetMaxOutputReportLength));
+                return (true, "ok (one-shot)");
             }
             catch (Exception ex)
             {
-                _log.Error(ex, "HID write over hold session failed ({What}); reopening.", what);
-                CloseSession();
+                _log.Error(ex, "HID write failed ({What}).", what);
+                return (false, "HID write failed: " + ex.Message);
             }
-
-            // Reopen the hold session once and retry over it, so the read-drain comes back
-            // immediately rather than waiting for the next keep-alive tick.
-            if (WantHold())
-            {
-                lock (_sync)
-                {
-                    held = EnsureOpenLocked();
-                    heldLen = _outputReportLength;
-                }
-                if (held is not null)
-                {
-                    try
-                    {
-                        WriteReport(held, frame, heldLen);
-                        return (true, "ok (session reopened)");
-                    }
-                    catch (Exception ex)
-                    {
-                        _log.Error(ex, "HID write failed again over the reopened session ({What}).", what);
-                        CloseSession();
-                        // fall through to a one-shot attempt
-                    }
-                }
-            }
-        }
-
-        // One-shot path (no hold session, or the held write just failed).
-        var dev = FindDevice();
-        if (dev is null)
-            return (false, "Ryuo IV LCD not found on USB (VID 0B05 / PID 1C76, interface MI_00).");
-        try
-        {
-            var options = new OpenConfiguration();
-            options.SetOption(OpenOption.Interruptible, true);
-            using HidStream stream = dev.Open(options);
-            WriteReport(stream, frame, SafeLen(dev.GetMaxOutputReportLength));
-            return (true, "ok (one-shot)");
-        }
-        catch (Exception ex)
-        {
-            _log.Error(ex, "HID write failed ({What}).", what);
-            return (false, "HID write failed: " + ex.Message);
         }
     }
 
@@ -430,6 +437,14 @@ public sealed class BacklightService : IDisposable
     }
 
     private void CloseSession()
+    {
+        lock (_writeSync)
+        {
+            CloseSessionCore();
+        }
+    }
+
+    private void CloseSessionCore()
     {
         Thread? reader;
         lock (_sync)
