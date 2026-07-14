@@ -11,10 +11,14 @@
     <Nullable>enable</Nullable>
     <AssemblyName>RyuoBrightnessFix</AssemblyName>
     <RootNamespace>RyuoBrightnessFix</RootNamespace>
+    <!-- Custom entry point (Program.Main) so the process can start in the supervisor mode
+         selected by the crash-supervisor switch before WPF spins up. Overrides the Main WPF
+         generates from App.xaml. -->
+    <StartupObject>RyuoBrightnessFix.Program</StartupObject>
     <!-- Shown in the status bar (click-to-copy); bump the prefix on every user-visible
          change. The suffix stamps the compile time into every build (deliberately
          non-deterministic), so which binary is running is never ambiguous. -->
-    <VersionPrefix>1.9.3</VersionPrefix>
+    <VersionPrefix>1.10.0</VersionPrefix>
     <VersionSuffix>build.$([System.DateTime]::Now.ToString(yyyyMMdd-HHmmss))</VersionSuffix>
     <!-- NOTE: InvariantGlobalization must stay OFF — WPF data binding needs a real
          culture (en-US) or it throws "Cannot find non-neutral culture" at render. -->
