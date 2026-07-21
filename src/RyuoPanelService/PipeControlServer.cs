@@ -108,6 +108,9 @@ public sealed class PipeControlServer : IDisposable
         if (command.Equals(PanelControlProtocol.CmdWidgets, StringComparison.OrdinalIgnoreCase))
             return _daemon.GetWidgetValuesJson();
 
+        if (command.Equals(PanelControlProtocol.CmdSensors, StringComparison.OrdinalIgnoreCase))
+            return _daemon.GetSensorDump();
+
         return "ERR unknown command";
     }
 

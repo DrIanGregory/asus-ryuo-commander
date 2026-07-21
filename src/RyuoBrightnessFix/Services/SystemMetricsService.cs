@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.Versioning;
 using System.Security.Principal;
@@ -30,6 +31,7 @@ public sealed class SystemMetricsService : IDisposable
 {
     private readonly ILogger _log;
     private readonly object _sync = new();
+    private readonly NvidiaGpuReader _gpuReader;
     private Computer? _computer;
     private bool _openFailed;
     private bool _gpuDisabledLogged;
@@ -37,6 +39,7 @@ public sealed class SystemMetricsService : IDisposable
     public SystemMetricsService(ILogger log)
     {
         _log = log.ForContext<SystemMetricsService>();
+        _gpuReader = new NvidiaGpuReader(_log);
 
         // A GPU driver reset (TDR) or a suspend/resume cycle can invalidate the native GPU
         // handles LibreHardwareMonitor uses. The next GPU poll can then die with an
@@ -123,7 +126,7 @@ public sealed class SystemMetricsService : IDisposable
                 if (!_gpuDisabledLogged)
                 {
                     _gpuDisabledLogged = true;
-                    _log.Warning("GPU metrics disabled to avoid native LibreHardwareMonitor/NVIDIA access-violation crashes after sleep or driver resets.");
+                    _log.Information("LibreHardwareMonitor's in-process NVIDIA path is disabled (it crashes the process after driver resets); GPU metrics come from nvidia-smi out-of-process instead.");
                 }
                 _log.Information("Hardware sensors opened (kernel sensor access: {Admin}).",
                     HasKernelSensorAccess);
@@ -173,7 +176,7 @@ public sealed class SystemMetricsService : IDisposable
                     hw.Update();
                     foreach (var sub in hw.SubHardware) sub.Update();
                 }
-                var snap = Collect(_computer);
+                var snap = AugmentWithGpu(Collect(_computer));
                 _lastSnapshot = snap;
                 return RenderJson(snap);
             }
@@ -337,6 +340,57 @@ public sealed class SystemMetricsService : IDisposable
             netUp, netDown, mbTemp, chipsetTemp, fans);
     }
 
+    /// <summary>
+    /// Overlay GPU readings from nvidia-smi onto the snapshot. LibreHardwareMonitor's in-process
+    /// NVIDIA path stays disabled (its native NVML call crashes the whole process after a driver
+    /// reset — an uncatchable AccessViolation), so GPU data comes from nvidia-smi run
+    /// out-of-process: if that ever crashes it takes only its own short-lived child with it, never
+    /// this service. No-op (leaves zeros) when nvidia-smi is absent or has no reading yet.
+    /// </summary>
+    private Snapshot AugmentWithGpu(Snapshot snap)
+    {
+        var g = _gpuReader.Read();
+        if (g is null) return snap;
+        return snap with
+        {
+            HasDedicatedGpu = true,
+            GpuTemp = g.Value.Temp,
+            GpuLoad = g.Value.Load,
+            GpuPower = g.Value.Power,
+            GpuClock = g.Value.Clock,
+            GpuFan = g.Value.Fan,
+        };
+    }
+
+    /// <summary>Human-readable dump of every hardware/sub-hardware/sensor currently visible, for
+    /// diagnosing which sensors a given security context (e.g. the session-0 service) can read.</summary>
+    public string DumpSensorTree()
+    {
+        lock (_sync)
+        {
+            if (_computer is null) return "(sensor stack not open)";
+            var sb = new StringBuilder(2048);
+            sb.Append("kernelAccess=").Append(HasKernelSensorAccess).Append('\n');
+            foreach (var hw in _computer.Hardware)
+            {
+                hw.Update();
+                sb.Append(hw.HardwareType).Append(": ").Append(hw.Name).Append('\n');
+                foreach (var s in hw.Sensors)
+                    sb.Append("  [").Append(s.SensorType).Append("] ").Append(s.Name)
+                      .Append(" = ").Append(s.Value?.ToString(CultureInfo.InvariantCulture) ?? "null").Append('\n');
+                foreach (var sub in hw.SubHardware)
+                {
+                    sub.Update();
+                    sb.Append("  SUB ").Append(sub.Name).Append('\n');
+                    foreach (var s in sub.Sensors)
+                        sb.Append("    [").Append(s.SensorType).Append("] ").Append(s.Name)
+                          .Append(" = ").Append(s.Value?.ToString(CultureInfo.InvariantCulture) ?? "null").Append('\n');
+                }
+            }
+            return sb.ToString();
+        }
+    }
+
     private static string RenderJson(Snapshot s)
     {
         var sb = new StringBuilder(768);
@@ -427,6 +481,86 @@ public sealed class SystemMetricsService : IDisposable
         {
             try { _computer?.Close(); } catch { }
             _computer = null;
+        }
+    }
+}
+
+/// <summary>
+/// Reads GPU temperature / load / power / clock / fan from <c>nvidia-smi</c>, out-of-process, as a
+/// crash-safe replacement for LibreHardwareMonitor's in-process NVML (which raises an uncatchable
+/// AccessViolation after a driver reset and kills the host). Cached briefly so the ~150 ms
+/// nvidia-smi launch runs at most once per poll; self-disables when nvidia-smi isn't present.
+/// </summary>
+[SupportedOSPlatform("windows")]
+internal sealed class NvidiaGpuReader
+{
+    public readonly record struct GpuReading(double Temp, double Load, double Power, double Clock, double Fan);
+
+    private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(2.5);
+
+    private readonly ILogger _log;
+    private readonly string? _exe;
+    private GpuReading? _cached;
+    private DateTime _cachedAtUtc = DateTime.MinValue;
+    private bool _loggedUnavailable;
+
+    public NvidiaGpuReader(ILogger log)
+    {
+        _log = log.ForContext<NvidiaGpuReader>();
+        _exe = LocateSmi();
+        if (_exe is null)
+            _log.Information("nvidia-smi not found — GPU metrics will read 0 (no NVIDIA GPU or driver tools).");
+    }
+
+    private static string? LocateSmi()
+    {
+        // The driver installs nvidia-smi into System32 (on PATH); older setups use Program Files.
+        string system = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "nvidia-smi.exe");
+        if (File.Exists(system)) return system;
+        string progFiles = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            "NVIDIA Corporation", "NVSMI", "nvidia-smi.exe");
+        if (File.Exists(progFiles)) return progFiles;
+        return "nvidia-smi.exe";   // last resort: resolve via PATH (Read() self-disables if it fails)
+    }
+
+    public GpuReading? Read()
+    {
+        if (_exe is null) return null;
+        if (_cached is not null && DateTime.UtcNow - _cachedAtUtc < CacheTtl) return _cached;
+
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = _exe,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            psi.ArgumentList.Add("--query-gpu=temperature.gpu,utilization.gpu,power.draw,clocks.gr,fan.speed");
+            psi.ArgumentList.Add("--format=csv,noheader,nounits");
+
+            using var proc = Process.Start(psi);
+            if (proc is null) return _cached;
+            string output = proc.StandardOutput.ReadToEnd();
+            if (!proc.WaitForExit(2000)) { try { proc.Kill(); } catch { } return _cached; }
+
+            // First GPU line, e.g. "42, 32, 45.59, 2800, 30" (fields may be "[N/A]").
+            string? line = output.Split('\n').FirstOrDefault(l => !string.IsNullOrWhiteSpace(l));
+            if (line is null) return _cached;
+            var f = line.Split(',');
+            double P(int i) => i < f.Length &&
+                double.TryParse(f[i].Trim(), NumberStyles.Any, CultureInfo.InvariantCulture, out var v) ? v : 0;
+
+            _cached = new GpuReading(P(0), P(1), P(2), P(3), P(4));
+            _cachedAtUtc = DateTime.UtcNow;
+            return _cached;
+        }
+        catch (Exception ex)
+        {
+            if (!_loggedUnavailable) { _loggedUnavailable = true; _log.Warning(ex, "nvidia-smi GPU read failed; GPU metrics unavailable."); }
+            return _cached;
         }
     }
 }

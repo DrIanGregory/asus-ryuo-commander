@@ -427,6 +427,13 @@ public sealed class PanelDaemon : IDisposable
         return System.Text.Json.JsonSerializer.Serialize(values);
     }
 
+    /// <summary>Diagnostic: the raw sensor tree the service currently reads (for the SENSORS command).</summary>
+    public string GetSensorDump()
+    {
+        var m = _metrics;
+        return m is null ? "(metrics service not open — is metrics streaming enabled?)" : m.DumpSensorTree();
+    }
+
     /// <summary>The config UI wrote new settings and asked the daemon to apply them now, rather
     /// than waiting for the periodic settings poll.</summary>
     public void ApplyExternalReload()

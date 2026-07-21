@@ -21,6 +21,9 @@ public static class PanelControlProtocol
     /// enabled metric slots, so the config UI's preview mirrors what the panel is showing.</summary>
     public const string CmdWidgets = "WIDGETS";
 
+    /// <summary>Diagnostic: dump the full hardware/sensor tree the service currently sees (multi-line).</summary>
+    public const string CmdSensors = "SENSORS";
+
     public const string Ok = "OK";
 }
 
