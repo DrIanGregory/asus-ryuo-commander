@@ -1247,13 +1247,23 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         private double _rpm;
         public double Rpm { get => _rpm; set { if (SetProperty(ref _rpm, value)) OnPropertyChanged(nameof(Display)); } }
 
-        /// <summary>e.g. "Fan #7 — 3082 RPM".</summary>
-        public string Display => $"{RawName} — {_rpm:0} RPM";
+        /// <summary>Live RPM leads (that's how you identify a fan); the raw header id is context.</summary>
+        public string Display => $"{_rpm:0} RPM  ({RawName})";
 
         private string _label;
         /// <summary>Friendly name shown on the panel; blank keeps the raw name.</summary>
         public string Label { get => _label; set { if (SetProperty(ref _label, value ?? "")) _onLabelChanged(this); } }
+
+        /// <summary>Set the label without firing the change callback (for seeding the best guess).</summary>
+        public void SetLabelSilently(string label) { _label = label ?? ""; OnPropertyChanged(nameof(Label)); }
     }
+
+    /// <summary>Role names offered in the fan-label dropdown (editable, so a custom name still works).</summary>
+    public IReadOnlyList<string> FanRoleOptions { get; } = new[]
+    {
+        "AIO Pump", "Water Pump", "CPU Fan", "CPU OPT Fan",
+        "Chassis Fan 1", "Chassis Fan 2", "Chassis Fan 3", "GPU Fan", "Radiator Fans",
+    };
 
     public System.Collections.ObjectModel.ObservableCollection<FanMapping> FanMappings { get; } = new();
 
@@ -1284,6 +1294,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void MergeFanMappings(IReadOnlyList<(string Name, double Rpm)> fans)
     {
+        bool added = false;
         foreach (var (name, rpm) in fans)
         {
             var existing = FanMappings.FirstOrDefault(f => f.RawName == name);
@@ -1291,18 +1302,47 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             {
                 _settings.FanLabels.TryGetValue(name, out var label);
                 FanMappings.Add(new FanMapping(name, label ?? "", OnFanLabelChanged) { Rpm = rpm });
-                OnPropertyChanged(nameof(HasFanMappings));
+                added = true;
             }
             else
             {
                 existing.Rpm = rpm;
             }
         }
+        if (added)
+        {
+            OnPropertyChanged(nameof(HasFanMappings));
+            ApplyBestGuessLabels();
+        }
     }
 
-    /// <summary>A label was edited: rebuild the fan-label map, persist it, and apply it (tell the
-    /// service to reload, or set it on our own metrics standalone).</summary>
-    private void OnFanLabelChanged(FanMapping _)
+    /// <summary>Give any still-unlabelled fan a sensible default so the panel shows meaningful names
+    /// out of the box: fastest fan → the pump, then CPU/Chassis fans, skipping roles already taken.
+    /// Overridable from the dropdown; guesses are persisted so they stay put.</summary>
+    private void ApplyBestGuessLabels()
+    {
+        var used = new HashSet<string>(
+            FanMappings.Where(f => !string.IsNullOrWhiteSpace(f.Label)).Select(f => f.Label.Trim()),
+            StringComparer.OrdinalIgnoreCase);
+        string[] preference = { "AIO Pump", "CPU Fan", "Chassis Fan 1", "Chassis Fan 2", "Chassis Fan 3" };
+
+        bool changed = false;
+        foreach (var fan in FanMappings.Where(f => string.IsNullOrWhiteSpace(f.Label)).OrderByDescending(f => f.Rpm))
+        {
+            string role = preference.FirstOrDefault(r => !used.Contains(r)) ?? "Fan";
+            used.Add(role);
+            fan.SetLabelSilently(role);
+            changed = true;
+        }
+        if (changed) PersistFanLabels();
+    }
+
+    /// <summary>A label was edited from the dropdown: persist + apply.</summary>
+    private void OnFanLabelChanged(FanMapping _) => PersistFanLabels();
+
+    /// <summary>Rebuild the fan-label map from the editor rows, persist it, and apply it (reload the
+    /// service, or set it on our own metrics standalone).</summary>
+    private void PersistFanLabels()
     {
         var labels = FanMappings
             .Where(f => !string.IsNullOrWhiteSpace(f.Label))
