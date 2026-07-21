@@ -57,7 +57,7 @@ internal static class ServiceControl
         // Also run recovery when the service stops with a non-zero exit even without a crash.
         RunSc("failureflag", AppConstants.ServiceName, "1");
 
-        DisableLegacyTrayAutostart();
+        SetupTrayCompanionAutostart(exe);
 
         Console.WriteLine("Starting the service…");
         var start = RunSc("start", AppConstants.ServiceName);
@@ -100,18 +100,63 @@ internal static class ServiceControl
         catch (Exception ex) { Console.WriteLine("Could not adjust data-folder permissions: " + ex.Message); }
     }
 
-    /// <summary>Remove the old tray-app autostart so it doesn't also grab the HID and fight the
-    /// service. The elevated Task Scheduler task and the HKCU Run value are both cleared.</summary>
-    private static void DisableLegacyTrayAutostart()
+    /// <summary>
+    /// Set up the config UI (the tray icon) to auto-start at logon as an unelevated CLIENT. The
+    /// service is headless — a session-0 Windows Service cannot show a tray icon — so the tray
+    /// icon IS this companion process, and it must start on its own or the user is left with a
+    /// running-but-invisible app. Removes the pre-service ELEVATED logon task (the UI no longer
+    /// needs admin — the service does the privileged work), then writes an unelevated HKCU Run
+    /// entry and turns the "Start with Windows" setting on so the UI keeps that entry in sync.
+    /// </summary>
+    private static void SetupTrayCompanionAutostart(string serviceExe)
     {
         try
         {
+            // The old autostart launched the tray app ELEVATED (for sensor access). That job is
+            // the service's now, so drop the elevated task; the UI runs unelevated as a client.
             RunProcess("schtasks.exe", "/Delete", "/TN", "RyuoBrightnessFix", "/F");
-            RunProcess("reg.exe", "delete",
-                @"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "RyuoBrightnessFix", "/f");
-            Console.WriteLine("Disabled the old tray-app autostart (the service owns the panel now).");
+
+            string? ui = FindConfigUiExe(serviceExe);
+            if (ui is null)
+            {
+                Console.WriteLine("Config UI (RyuoBrightnessFix.exe) not found next to the service — the tray icon " +
+                                  "won't auto-start. Launch RyuoBrightnessFix.exe manually and tick 'Start with Windows'.");
+                return;
+            }
+
+            // Unelevated logon autostart for the tray/config app.
+            RunProcess("reg.exe", "add", @"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                "/v", "RyuoBrightnessFix", "/t", "REG_SZ", "/d", $"\"{ui}\"", "/f");
+
+            // Keep the app's own "Start with Windows" setting consistent with the Run entry, so
+            // the UI doesn't remove it on next launch (it syncs the registry to this flag).
+            try
+            {
+                var settings = AppSettings.Load();
+                settings.StartWithWindows = true;
+                settings.Save();
+            }
+            catch (Exception ex) { Console.WriteLine("Could not update the autostart setting: " + ex.Message); }
+
+            Console.WriteLine($"Tray/config app set to start at logon -> {ui}");
+            Console.WriteLine("It will appear at your next sign-in; to see it now, run RyuoBrightnessFix.exe.");
         }
-        catch (Exception ex) { Console.WriteLine("Could not remove the old autostart: " + ex.Message); }
+        catch (Exception ex) { Console.WriteLine("Could not set up the tray companion autostart: " + ex.Message); }
+    }
+
+    /// <summary>Locate the config UI exe: next to the service (a deployed install), else the dev
+    /// sibling build output (…\RyuoPanelService\… → …\RyuoBrightnessFix\…).</summary>
+    private static string? FindConfigUiExe(string serviceExe)
+    {
+        string dir = Path.GetDirectoryName(serviceExe) ?? "";
+        string sameDir = Path.Combine(dir, "RyuoBrightnessFix.exe");
+        if (File.Exists(sameDir)) return sameDir;
+
+        string devSibling = serviceExe.Replace("RyuoPanelService", "RyuoBrightnessFix");
+        if (!string.Equals(devSibling, serviceExe, StringComparison.OrdinalIgnoreCase) && File.Exists(devSibling))
+            return devSibling;
+
+        return null;
     }
 
     private static (int Exit, string Output) RunSc(params string[] args) => RunProcess("sc.exe", args);
