@@ -86,6 +86,14 @@ public sealed class AppSettings
         "Fan Speed AIO Pump", "Motherboard Temperature", "Date&Time",
     };
 
+    /// <summary>
+    /// Friendly labels for motherboard fan headers, keyed by the raw sensor name
+    /// LibreHardwareMonitor reports (e.g. <c>{"Fan #7":"AIO Pump"}</c>). Boards like the ROG APEX
+    /// expose fans generically as "Fan #1..N" with no header names, so this maps the ones you use
+    /// to the names the panel widgets reference ("Fan Speed AIO Pump" etc.). Empty by default.
+    /// </summary>
+    public Dictionary<string, string> FanLabels { get; set; } = new();
+
     // --- Diagnostics ---
     /// <summary>
     /// When true, the logger captures full verbose/debug detail (adb command lines,

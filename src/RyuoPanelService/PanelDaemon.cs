@@ -267,6 +267,7 @@ public sealed class PanelDaemon : IDisposable
         {
             if (!_settings.MetricsEnabled || !_deviceConnected) return;
             _metrics ??= new SystemMetricsService(_log);
+            _metrics.SetFanLabels(_settings.FanLabels);   // cheap; picks up label edits on reload
             if (!_metrics.EnsureOpen()) return;
 
             string? json = _metrics.BuildAllJson();

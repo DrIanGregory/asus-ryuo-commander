@@ -32,6 +32,7 @@ public sealed class SystemMetricsService : IDisposable
     private readonly ILogger _log;
     private readonly object _sync = new();
     private readonly NvidiaGpuReader _gpuReader;
+    private IReadOnlyDictionary<string, string> _fanLabels = new Dictionary<string, string>();
     private Computer? _computer;
     private bool _openFailed;
     private bool _gpuDisabledLogged;
@@ -156,7 +157,8 @@ public sealed class SystemMetricsService : IDisposable
                     sub.Update();
                     names.AddRange(sub.Sensors
                         .Where(s => s.SensorType == SensorType.Fan && (s.Value ?? 0) > 0)
-                        .Select(s => s.Name));
+                        .Select(s => _fanLabels.TryGetValue(s.Name, out var l) && !string.IsNullOrWhiteSpace(l)
+                            ? l : s.Name));
                 }
             }
             return names;
@@ -176,7 +178,7 @@ public sealed class SystemMetricsService : IDisposable
                     hw.Update();
                     foreach (var sub in hw.SubHardware) sub.Update();
                 }
-                var snap = AugmentWithGpu(Collect(_computer));
+                var snap = AugmentWithGpu(RelabelFans(Collect(_computer)));
                 _lastSnapshot = snap;
                 return RenderJson(snap);
             }
@@ -347,6 +349,25 @@ public sealed class SystemMetricsService : IDisposable
     /// out-of-process: if that ever crashes it takes only its own short-lived child with it, never
     /// this service. No-op (leaves zeros) when nvidia-smi is absent or has no reading yet.
     /// </summary>
+    /// <summary>Set the fan-header → friendly-name map (from settings). Applied to every snapshot
+    /// so the panel's "Fan Speed &lt;label&gt;" widgets resolve to the right physical header.</summary>
+    public void SetFanLabels(IReadOnlyDictionary<string, string> labels)
+    {
+        lock (_sync) { _fanLabels = labels ?? new Dictionary<string, string>(); }
+    }
+
+    /// <summary>Rename fans per the user's label map (e.g. "Fan #7" → "AIO Pump"), so widgets that
+    /// reference a friendly name match the generic header the board actually reports.</summary>
+    private Snapshot RelabelFans(Snapshot snap)
+    {
+        if (_fanLabels.Count == 0 || snap.Fans.Count == 0) return snap;
+        var relabeled = snap.Fans
+            .Select(f => (_fanLabels.TryGetValue(f.Name, out var label) && !string.IsNullOrWhiteSpace(label)
+                ? label : f.Name, f.Rpm))
+            .ToList();
+        return snap with { Fans = relabeled };
+    }
+
     private Snapshot AugmentWithGpu(Snapshot snap)
     {
         var g = _gpuReader.Read();
