@@ -1234,18 +1234,60 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         private readonly Action<FanMapping> _onLabelChanged;
 
+        private static readonly string[] BaseRoles =
+        {
+            "AIO Pump", "Water Pump", "CPU Fan", "CPU OPT Fan",
+            "Chassis Fan 1", "Chassis Fan 2", "Chassis Fan 3", "GPU Fan", "Radiator Fans",
+        };
+
         public FanMapping(string rawName, string label, Action<FanMapping> onLabelChanged)
         {
             RawName = rawName;
             _label = label ?? "";
             _onLabelChanged = onLabelChanged;
+            // Every option the dropdown offers this fan. Include the current label if it's a custom
+            // one, so SelectedItem always resolves (and thus always displays).
+            RoleOptions = string.IsNullOrWhiteSpace(_label) || BaseRoles.Contains(_label)
+                ? BaseRoles
+                : BaseRoles.Append(_label).ToArray();
         }
 
         /// <summary>The raw name LibreHardwareMonitor reports (e.g. "Fan #7").</summary>
         public string RawName { get; }
 
+        /// <summary>Dropdown choices for this fan (the standard roles, plus its own custom label if any).</summary>
+        public IReadOnlyList<string> RoleOptions { get; }
+
+        private readonly Queue<double> _samples = new();
+
         private double _rpm;
-        public double Rpm { get => _rpm; set { if (SetProperty(ref _rpm, value)) OnPropertyChanged(nameof(Display)); } }
+        public double Rpm
+        {
+            get => _rpm;
+            set
+            {
+                if (SetProperty(ref _rpm, value)) OnPropertyChanged(nameof(Display));
+                _samples.Enqueue(value);
+                while (_samples.Count > 10) _samples.Dequeue();   // ~40s of history at the 4s poll
+            }
+        }
+
+        /// <summary>How many RPM samples collected — enough history is needed to judge steadiness.</summary>
+        public int SampleCount => _samples.Count;
+
+        /// <summary>Coefficient of variation of recent RPM (stddev / mean). A pump holds near-constant
+        /// speed (low value); fans ramp with temperature (higher). Used to guess which fan is the pump.</summary>
+        public double Variability
+        {
+            get
+            {
+                if (_samples.Count < 2) return double.MaxValue;
+                double mean = _samples.Average();
+                if (mean <= 0) return double.MaxValue;
+                double variance = _samples.Select(s => (s - mean) * (s - mean)).Average();
+                return Math.Sqrt(variance) / mean;
+            }
+        }
 
         /// <summary>Live RPM leads (that's how you identify a fan); the raw header id is context.</summary>
         public string Display => $"{_rpm:0} RPM  ({RawName})";
@@ -1257,13 +1299,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         /// <summary>Set the label without firing the change callback (for seeding the best guess).</summary>
         public void SetLabelSilently(string label) { _label = label ?? ""; OnPropertyChanged(nameof(Label)); }
     }
-
-    /// <summary>Role names offered in the fan-label dropdown (editable, so a custom name still works).</summary>
-    public IReadOnlyList<string> FanRoleOptions { get; } = new[]
-    {
-        "AIO Pump", "Water Pump", "CPU Fan", "CPU OPT Fan",
-        "Chassis Fan 1", "Chassis Fan 2", "Chassis Fan 3", "GPU Fan", "Radiator Fans",
-    };
 
     public System.Collections.ObjectModel.ObservableCollection<FanMapping> FanMappings { get; } = new();
 
@@ -1309,29 +1344,35 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 existing.Rpm = rpm;
             }
         }
-        if (added)
-        {
-            OnPropertyChanged(nameof(HasFanMappings));
-            ApplyBestGuessLabels();
-        }
+        if (added) OnPropertyChanged(nameof(HasFanMappings));
+        ApplyBestGuessLabels();   // each poll: no-ops once labelled or until enough samples
     }
 
     /// <summary>Give any still-unlabelled fan a sensible default so the panel shows meaningful names
-    /// out of the box: fastest fan → the pump, then CPU/Chassis fans, skipping roles already taken.
-    /// Overridable from the dropdown; guesses are persisted so they stay put.</summary>
+    /// out of the box — the same reasoning used by hand: watch each fan's RPM for a few polls, then
+    /// call the STEADIEST one the pump (pumps hold constant RPM; radiator/case fans ramp with load),
+    /// and the rest CPU/Chassis. Persisted, and overridable from the dropdown.</summary>
     private void ApplyBestGuessLabels()
     {
+        var unlabelled = FanMappings.Where(f => string.IsNullOrWhiteSpace(f.Label)).ToList();
+        if (unlabelled.Count == 0) return;
+
+        // Wait for a little RPM history before judging steadiness (~20s at the 4s poll).
+        const int minSamples = 5;
+        if (unlabelled.Any(f => f.SampleCount < minSamples)) return;
+
         var used = new HashSet<string>(
             FanMappings.Where(f => !string.IsNullOrWhiteSpace(f.Label)).Select(f => f.Label.Trim()),
             StringComparer.OrdinalIgnoreCase);
-        string[] preference = { "AIO Pump", "CPU Fan", "Chassis Fan 1", "Chassis Fan 2", "Chassis Fan 3" };
+        var roles = new Queue<string>(
+            new[] { "AIO Pump", "CPU Fan", "Chassis Fan 1", "Chassis Fan 2", "Chassis Fan 3" }
+                .Where(r => !used.Contains(r)));
 
         bool changed = false;
-        foreach (var fan in FanMappings.Where(f => string.IsNullOrWhiteSpace(f.Label)).OrderByDescending(f => f.Rpm))
+        foreach (var fan in unlabelled.OrderBy(f => f.Variability))   // steadiest first → pump
         {
-            string role = preference.FirstOrDefault(r => !used.Contains(r)) ?? "Fan";
-            used.Add(role);
-            fan.SetLabelSilently(role);
+            if (roles.Count == 0) break;
+            fan.SetLabelSilently(roles.Dequeue());
             changed = true;
         }
         if (changed) PersistFanLabels();

@@ -328,14 +328,12 @@
                                                 <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
                                                     <TextBlock Text="{Binding Display}" VerticalAlignment="Center"
                                                                Width="150" Style="{StaticResource SubtleText}" />
-                                                    <!-- IsSynchronizedWithCurrentItem=False: every fan row shares one
-                                                         FanRoleOptions list, and without this WPF syncs them to the
-                                                         list's shared current-item and blanks each editable Text. -->
-                                                    <ComboBox Width="150" Margin="6,0,0,0" IsEditable="True"
-                                                              IsSynchronizedWithCurrentItem="False"
-                                                              ItemsSource="{Binding DataContext.FanRoleOptions,
-                                                                            RelativeSource={RelativeSource AncestorType=ItemsControl}}"
-                                                              Text="{Binding Label, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" />
+                                                    <!-- Plain SelectedItem binding (each fan has its own RoleOptions
+                                                         list that includes its current label) reliably displays the
+                                                         value, unlike an editable ComboBox's Text binding. -->
+                                                    <ComboBox Width="150" Margin="6,0,0,0"
+                                                              ItemsSource="{Binding RoleOptions}"
+                                                              SelectedItem="{Binding Label, Mode=TwoWay}" />
                                                 </StackPanel>
                                             </DataTemplate>
                                         </ItemsControl.ItemTemplate>
