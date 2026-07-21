@@ -312,6 +312,29 @@
                                     <TextBox Style="{StaticResource InputBox}" Width="84" Margin="6,0,0,0"
                                              Text="{Binding MetricContentColor, UpdateSourceTrigger=LostFocus}" />
                                 </StackPanel>
+
+                                <!-- Fan labels: this board reports fans generically ("Fan #7"),
+                                     so let the user name each detected header. The typed name is
+                                     what the panel widget "Fan Speed <name>" then matches. -->
+                                <StackPanel Margin="0,14,0,0"
+                                            Visibility="{Binding HasFanMappings, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="Fan labels" FontFamily="Segoe UI Semibold" FontSize="12"
+                                               Foreground="{StaticResource ForegroundBrush}" />
+                                    <TextBlock Style="{StaticResource SubtleText}" TextWrapping="Wrap" Margin="0,2,0,0"
+                                               Text="Name each detected fan; the label is what a 'Fan Speed …' widget shows. Watch the live RPM to identify each (the pump stays steady; radiator fans ramp with load)." />
+                                    <ItemsControl ItemsSource="{Binding FanMappings}" Margin="0,6,0,0">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
+                                                    <TextBlock Text="{Binding Display}" VerticalAlignment="Center"
+                                                               Width="150" Style="{StaticResource SubtleText}" />
+                                                    <TextBox Style="{StaticResource InputBox}" Width="140" Margin="6,0,0,0"
+                                                             Text="{Binding Label, UpdateSourceTrigger=LostFocus}" />
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
                             </StackPanel>
                         </Border>
                     </Grid>

@@ -142,6 +142,29 @@ public sealed class SystemMetricsService : IDisposable
         }
     }
 
+    /// <summary>Connected motherboard fan headers as (raw sensor name, RPM) — the RAW names LHM
+    /// reports (e.g. "Fan #7"), NOT relabelled, so the config UI can map them. Only non-zero.</summary>
+    public IReadOnlyList<(string Name, double Rpm)> GetRawFans()
+    {
+        lock (_sync)
+        {
+            if (_computer is null) return Array.Empty<(string, double)>();
+            var result = new List<(string, double)>();
+            foreach (var hw in _computer.Hardware.Where(h => h.HardwareType == HardwareType.Motherboard))
+            {
+                hw.Update();
+                foreach (var sub in hw.SubHardware)
+                {
+                    sub.Update();
+                    result.AddRange(sub.Sensors
+                        .Where(s => s.SensorType == SensorType.Fan && (s.Value ?? 0) > 0)
+                        .Select(s => (s.Name, (double)s.Value!)));
+                }
+            }
+            return result;
+        }
+    }
+
     /// <summary>Names of motherboard fan headers with a non-zero reading (e.g. "CPU Fan", "AIO Pump").</summary>
     public IReadOnlyList<string> GetFanNames()
     {

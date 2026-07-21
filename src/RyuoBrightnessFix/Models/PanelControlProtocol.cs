@@ -24,6 +24,10 @@ public static class PanelControlProtocol
     /// <summary>Diagnostic: dump the full hardware/sensor tree the service currently sees (multi-line).</summary>
     public const string CmdSensors = "SENSORS";
 
+    /// <summary>Return the connected motherboard fan headers as JSON [{name, rpm}] (raw sensor
+    /// names, e.g. "Fan #7"), so the config UI can let the user label them.</summary>
+    public const string CmdFans = "FANS";
+
     public const string Ok = "OK";
 }
 

@@ -68,6 +68,26 @@ public sealed class ServiceClient
         catch (Exception ex) { _log.Debug(ex, "Parsing widget values failed."); return null; }
     }
 
+    /// <summary>Fetch the connected fan headers (raw name + RPM) so the UI can label them, or null
+    /// if the service isn't reachable.</summary>
+    public IReadOnlyList<(string Name, double Rpm)>? GetFans()
+    {
+        string? resp = Send(PanelControlProtocol.CmdFans);
+        if (string.IsNullOrWhiteSpace(resp) || resp.StartsWith("ERR", StringComparison.Ordinal)) return null;
+        try
+        {
+            var dtos = JsonSerializer.Deserialize<FanDto[]>(resp);
+            return dtos?.Select(d => (d.Name, d.Rpm)).ToList() ?? new List<(string, double)>();
+        }
+        catch (Exception ex) { _log.Debug(ex, "Parsing fan list failed."); return null; }
+    }
+
+    private sealed class FanDto
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("name")] public string Name { get; set; } = "";
+        [System.Text.Json.Serialization.JsonPropertyName("rpm")] public double Rpm { get; set; }
+    }
+
     private string? Send(string command)
     {
         try

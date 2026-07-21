@@ -428,6 +428,15 @@ public sealed class PanelDaemon : IDisposable
         return System.Text.Json.JsonSerializer.Serialize(values);
     }
 
+    /// <summary>Connected fan headers as JSON [{name, rpm}] (raw names) for the config UI's fan editor.</summary>
+    public string GetFansJson()
+    {
+        var m = _metrics;
+        var fans = m?.GetRawFans() ?? (IReadOnlyList<(string Name, double Rpm)>)Array.Empty<(string, double)>();
+        return System.Text.Json.JsonSerializer.Serialize(
+            fans.Select(f => new { name = f.Name, rpm = f.Rpm }));
+    }
+
     /// <summary>Diagnostic: the raw sensor tree the service currently reads (for the SENSORS command).</summary>
     public string GetSensorDump()
     {

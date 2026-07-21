@@ -1213,6 +1213,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         // In client mode there's no local metrics tick to refresh the preview overlays, so poll
         // the service for the values it's showing on the panel.
         if (_serviceMode) StartClientOverlayPolling();
+        StartFanPolling();
     }
 
     private System.Windows.Threading.DispatcherTimer? _clientOverlayTimer;
@@ -1223,6 +1224,94 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _clientOverlayTimer.Tick += (_, _) => RefreshOverlayValues();
         _clientOverlayTimer.Start();
         RefreshOverlayValues();   // fill immediately rather than waiting a tick
+    }
+
+    // ---------------------------------------------------------------- fan labelling
+
+    /// <summary>One motherboard fan header in the fan-label editor: raw sensor name, live RPM, and
+    /// the friendly label the user assigns (which becomes the fan's name on the panel).</summary>
+    public sealed class FanMapping : ObservableObject
+    {
+        private readonly Action<FanMapping> _onLabelChanged;
+
+        public FanMapping(string rawName, string label, Action<FanMapping> onLabelChanged)
+        {
+            RawName = rawName;
+            _label = label ?? "";
+            _onLabelChanged = onLabelChanged;
+        }
+
+        /// <summary>The raw name LibreHardwareMonitor reports (e.g. "Fan #7").</summary>
+        public string RawName { get; }
+
+        private double _rpm;
+        public double Rpm { get => _rpm; set { if (SetProperty(ref _rpm, value)) OnPropertyChanged(nameof(Display)); } }
+
+        /// <summary>e.g. "Fan #7 — 3082 RPM".</summary>
+        public string Display => $"{RawName} — {_rpm:0} RPM";
+
+        private string _label;
+        /// <summary>Friendly name shown on the panel; blank keeps the raw name.</summary>
+        public string Label { get => _label; set { if (SetProperty(ref _label, value ?? "")) _onLabelChanged(this); } }
+    }
+
+    public System.Collections.ObjectModel.ObservableCollection<FanMapping> FanMappings { get; } = new();
+
+    public bool HasFanMappings => FanMappings.Count > 0;
+
+    private System.Windows.Threading.DispatcherTimer? _fanPollTimer;
+
+    private void StartFanPolling()
+    {
+        _fanPollTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
+        _fanPollTimer.Tick += (_, _) => RefreshFanMappings();
+        _fanPollTimer.Start();
+        RefreshFanMappings();
+    }
+
+    /// <summary>Pull the connected fan headers (from the service in client mode, or our own metrics
+    /// standalone) and merge them into the editor list, updating live RPMs.</summary>
+    private void RefreshFanMappings()
+    {
+        Task.Run(() =>
+        {
+            IReadOnlyList<(string Name, double Rpm)>? fans =
+                _serviceMode ? _serviceClient.GetFans() : _metrics?.GetRawFans();
+            if (fans is null) return;
+            Application.Current?.Dispatcher.BeginInvoke(() => MergeFanMappings(fans));
+        });
+    }
+
+    private void MergeFanMappings(IReadOnlyList<(string Name, double Rpm)> fans)
+    {
+        foreach (var (name, rpm) in fans)
+        {
+            var existing = FanMappings.FirstOrDefault(f => f.RawName == name);
+            if (existing is null)
+            {
+                _settings.FanLabels.TryGetValue(name, out var label);
+                FanMappings.Add(new FanMapping(name, label ?? "", OnFanLabelChanged) { Rpm = rpm });
+                OnPropertyChanged(nameof(HasFanMappings));
+            }
+            else
+            {
+                existing.Rpm = rpm;
+            }
+        }
+    }
+
+    /// <summary>A label was edited: rebuild the fan-label map, persist it, and apply it (tell the
+    /// service to reload, or set it on our own metrics standalone).</summary>
+    private void OnFanLabelChanged(FanMapping _)
+    {
+        var labels = FanMappings
+            .Where(f => !string.IsNullOrWhiteSpace(f.Label))
+            .GroupBy(f => f.RawName)
+            .ToDictionary(g => g.Key, g => g.Last().Label.Trim());
+        _settings.FanLabels = labels;
+        SaveSettings();
+        if (_serviceMode) Task.Run(() => _serviceClient.Reload());
+        else _metrics?.SetFanLabels(labels);
     }
 
     private void AddMetricGroup(string name, params (string Token, string Label)[] chips)
@@ -1674,6 +1763,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _slotPushDebounce = null;
         _clientOverlayTimer?.Stop();
         _clientOverlayTimer = null;
+        _fanPollTimer?.Stop();
+        _fanPollTimer = null;
         _backlight.SessionOpened -= OnSessionOpened;
         _backlight.DeviceListChanged -= OnDeviceListChanged;
         _deviceChangeDebounce?.Stop();
