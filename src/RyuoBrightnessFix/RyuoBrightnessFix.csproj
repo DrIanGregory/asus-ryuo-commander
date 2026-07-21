@@ -11,14 +11,10 @@
     <Nullable>enable</Nullable>
     <AssemblyName>RyuoBrightnessFix</AssemblyName>
     <RootNamespace>RyuoBrightnessFix</RootNamespace>
-    <!-- Custom entry point (Program.Main) so the process can start in the supervisor mode
-         selected by the crash-supervisor switch before WPF spins up. Overrides the Main WPF
-         generates from App.xaml. -->
-    <StartupObject>RyuoBrightnessFix.Program</StartupObject>
     <!-- Shown in the status bar (click-to-copy); bump the prefix on every user-visible
          change. The suffix stamps the compile time into every build (deliberately
          non-deterministic), so which binary is running is never ambiguous. -->
-    <VersionPrefix>1.10.0</VersionPrefix>
+    <VersionPrefix>2.0.0</VersionPrefix>
     <VersionSuffix>build.$([System.DateTime]::Now.ToString(yyyyMMdd-HHmmss))</VersionSuffix>
     <!-- NOTE: InvariantGlobalization must stay OFF — WPF data binding needs a real
          culture (en-US) or it throws "Cannot find non-neutral culture" at render. -->
@@ -35,6 +31,8 @@
     <!-- Direct USB-HID control of the Ryuo IV LCD (the real brightness path;
          the panel ignores sysfs/adb backlight). -->
     <PackageReference Include="HidSharp" Version="2.6.4" />
+    <!-- Query/detect the panel Windows Service and talk to it over its control pipe. -->
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.1" />
   </ItemGroup>
 
   <!-- The dragon emblem as a WPF resource: used by the window chrome and loaded

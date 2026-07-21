@@ -25,6 +25,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private readonly LoggingLevelSwitch _levelSwitch;
     private readonly Queue<string> _logLines = new();
 
+    private readonly ServiceClient _serviceClient;
+    /// <summary>True when the panel Windows Service is installed — it owns the device, so this
+    /// window runs purely as a settings/status client and never opens a HID hold of its own
+    /// (they would otherwise fight over the single panel). Edits go to settings.json + a pipe
+    /// "reload"; the service applies them.</summary>
+    private readonly bool _serviceMode;
+
     private ResumeMonitor? _resumeMonitor;
 
     // Re-applies brightness on a short timer so the panel's firmware idle-dim (which fires
@@ -67,6 +74,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _backlight = new BacklightService(log);
         _recovery = new PanelRecoveryService(log);
         _media = new MediaService(log, _backlight);
+        _serviceClient = new ServiceClient(log);
+        _serviceMode = ServiceClient.IsServiceInstalled();
+        if (_serviceMode)
+            _log.Information("Panel service detected — this window runs as a client: it edits settings and " +
+                             "shows status; the background service owns the panel and its HID.");
 
         // Mirror persisted settings into bindable fields.
         _brightnessPercent = settings.TargetBrightnessPercent;
@@ -419,7 +431,20 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        BrightnessPercent = percent;
+        BrightnessPercent = percent;   // persists to settings.json
+
+        if (_serviceMode)
+        {
+            // The service owns the HID; it re-reads settings and re-applies on "reload".
+            _log.Information("Brightness {Percent}% saved — asking the service to apply it.", percent);
+            Task.Run(() =>
+            {
+                if (!_serviceClient.Reload())
+                    _log.Warning("Service reload failed; the brightness will apply on the service's next settings poll.");
+            });
+            return;
+        }
+
         _log.Information("Setting LCD backlight to {Percent}%…", percent);
         Task.Run(() =>
         {
@@ -468,7 +493,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             {
                 CanControlDevice = true;
                 SliderEnabled = true;
-                DeviceStatus = "Ryuo IV LCD connected (USB HID).";
+                DeviceStatus = _serviceMode
+                    ? "Ryuo IV LCD connected — driven by the background service (this window edits settings)."
+                    : "Ryuo IV LCD connected (USB HID).";
                 _log.Information("LCD reachable over USB HID.");
                 RestartResumeMonitor();
                 UpdateKeepAlive();
@@ -826,6 +853,19 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         var files = Playlist.Select(p => p.File).ToList();
         if (files.Count == 0) return;
+
+        if (_serviceMode)
+        {
+            // Playlist/mode/slots/colors were already saved to settings.json by the caller;
+            // the service re-reads and re-asserts them on "reload".
+            Task.Run(() =>
+            {
+                if (!_serviceClient.Reload())
+                    _log.Warning("Service reload failed; the panel will update on the service's next settings poll.");
+            });
+            return;
+        }
+
         string mode = _settings.PanelPlayMode;
         if (mode == "Single" && SelectedPlaylistItem is not null)
         {
@@ -1208,6 +1248,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void UpdateMetricsStreaming()
     {
+        if (_serviceMode) return;   // the service streams metrics to the panel
         if (_settings.MetricsEnabled && _metricsTimer is null)
         {
             _metricsTimer = new System.Threading.Timer(MetricsTick, null,
@@ -1388,6 +1429,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void RestartResumeMonitor()
     {
+        if (_serviceMode) return;   // the service handles resume via ServiceBase.OnPowerEvent
         StopResumeMonitor();
         if (!AutoFixOnResume) return;
 
@@ -1454,6 +1496,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     /// </summary>
     private void UpdateKeepAlive()
     {
+        if (_serviceMode) return;   // the service owns the brightness hold — never open a competing one
         bool shouldRun = CanControlDevice && KeepBrightnessAlive;
 
         if (shouldRun && _keepAliveTimer is null)

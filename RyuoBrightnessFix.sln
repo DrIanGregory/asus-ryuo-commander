@@ -7,6 +7,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{827E0CD3-B72
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RyuoBrightnessFix", "src\RyuoBrightnessFix\RyuoBrightnessFix.csproj", "{B4D83290-1EF2-4668-9EEF-37C16C3C558A}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RyuoPanelService", "src\RyuoPanelService\RyuoPanelService.csproj", "{C9A2AE38-87C3-491F-9EE6-DDAB608BAD1D}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -29,11 +31,24 @@ Global
 		{B4D83290-1EF2-4668-9EEF-37C16C3C558A}.Release|x64.Build.0 = Release|Any CPU
 		{B4D83290-1EF2-4668-9EEF-37C16C3C558A}.Release|x86.ActiveCfg = Release|Any CPU
 		{B4D83290-1EF2-4668-9EEF-37C16C3C558A}.Release|x86.Build.0 = Release|Any CPU
+		{C9A2AE38-87C3-491F-9EE6-DDAB608BAD1D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C9A2AE38-87C3-491F-9EE6-DDAB608BAD1D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C9A2AE38-87C3-491F-9EE6-DDAB608BAD1D}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{C9A2AE38-87C3-491F-9EE6-DDAB608BAD1D}.Debug|x64.Build.0 = Debug|Any CPU
+		{C9A2AE38-87C3-491F-9EE6-DDAB608BAD1D}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{C9A2AE38-87C3-491F-9EE6-DDAB608BAD1D}.Debug|x86.Build.0 = Debug|Any CPU
+		{C9A2AE38-87C3-491F-9EE6-DDAB608BAD1D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C9A2AE38-87C3-491F-9EE6-DDAB608BAD1D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C9A2AE38-87C3-491F-9EE6-DDAB608BAD1D}.Release|x64.ActiveCfg = Release|Any CPU
+		{C9A2AE38-87C3-491F-9EE6-DDAB608BAD1D}.Release|x64.Build.0 = Release|Any CPU
+		{C9A2AE38-87C3-491F-9EE6-DDAB608BAD1D}.Release|x86.ActiveCfg = Release|Any CPU
+		{C9A2AE38-87C3-491F-9EE6-DDAB608BAD1D}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{B4D83290-1EF2-4668-9EEF-37C16C3C558A} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{C9A2AE38-87C3-491F-9EE6-DDAB608BAD1D} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 	EndGlobalSection
 EndGlobal

@@ -19,12 +19,8 @@ namespace RyuoBrightnessFix.Services;
 /// access (CPU temperature, fan RPM for the Metrics feature) needs. The Run key is removed
 /// when the task exists so the app doesn't start twice.</item>
 /// </list>
-/// The task launches the exe in <c>--supervise</c> mode (see <see cref="CrashSupervisor"/>),
-/// which owns the GUI's restart-with-exponential-backoff policy. The task's own
-/// <c>RestartOnFailure</c> is the backstop that restarts the <i>supervisor</i> if it dies.
-///
 /// The task is registered from an XML definition rather than schtasks flags, because only
-/// XML can express the settings that matter here: restart the supervisor if it dies (up to
+/// XML can express the settings that matter here: restart the app if it crashes (up to
 /// 3 times, 1 minute apart), no execution time limit (the schtasks default kills the action after 72 h!),
 /// normal process priority (the schtasks default runs actions BelowNormal, which stutters
 /// the panel's video stream), and no battery conditions.
@@ -130,9 +126,8 @@ public sealed class StartupRegistrationService
 
         // Quote the path so spaces in the install dir are handled. Always written with THIS
         // exe's path so a stale registration (e.g. an old build location) self-heals on every
-        // enable/startup rather than launching the old binary. Launch via the crash supervisor
-        // so an uncatchable native crash is restarted with backoff (see CrashSupervisor).
-        string value = $"\"{ExePath}\" {CrashSupervisor.Switch}";
+        // enable/startup rather than launching the old binary.
+        string value = $"\"{ExePath}\"";
         string? existing = key.GetValue(AppConstants.RunValueName) as string;
         if (!string.Equals(existing, value, StringComparison.OrdinalIgnoreCase))
         {
@@ -247,7 +242,6 @@ public sealed class StartupRegistrationService
               <Actions Context="Author">
                 <Exec>
                   <Command>{exe}</Command>
-                  <Arguments>{CrashSupervisor.Switch}</Arguments>
                   <WorkingDirectory>{exeDir}</WorkingDirectory>
                 </Exec>
               </Actions>

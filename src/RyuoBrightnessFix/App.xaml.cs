@@ -60,6 +60,10 @@ public partial class App : Application
 
     private void StartGui()
     {
+        // Carry a pre-service install's per-user settings/video cache into the shared
+        // %ProgramData% root (this runs as the interactive user, who can see their %APPDATA%).
+        AppConstants.MigrateLegacyDataIfNeeded();
+
         // Logger: rolling file + the in-app log pane sink.
         var logDir = AppConstants.LogDir;
         Directory.CreateDirectory(logDir);

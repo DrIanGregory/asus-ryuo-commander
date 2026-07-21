@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- net8.0-windows: HidSharp, LibreHardwareMonitor (ring-0 sensors), SystemEvents and
+         ServiceBase are all Windows-only. No WPF/WinForms — this is the headless daemon. -->
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>RyuoPanelService</AssemblyName>
+    <RootNamespace>RyuoPanelService</RootNamespace>
+    <!-- Same version stamp scheme as the UI so a running service's build is never ambiguous. -->
+    <VersionPrefix>2.0.0</VersionPrefix>
+    <VersionSuffix>build.$([System.DateTime]::Now.ToString(yyyyMMdd-HHmmss))</VersionSuffix>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6" />
+    <PackageReference Include="Serilog" Version="4.2.0" />
+    <PackageReference Include="Serilog.Sinks.File" Version="6.0.0" />
+    <PackageReference Include="Microsoft.Win32.SystemEvents" Version="8.0.0" />
+    <PackageReference Include="HidSharp" Version="2.6.4" />
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.1" />
+    <PackageReference Include="System.IO.Pipes.AccessControl" Version="5.0.0" />
+  </ItemGroup>
+
+  <!-- Shared source with the WPF app: one source of truth per file, compiled into both the
+       daemon (this) and the config UI. These are all UI-free (verified: zero System.Windows
+       references). ResumeMonitor is deliberately NOT shared — a session-0 service gets resume
+       via ServiceBase.OnPowerEvent, not SystemEvents. -->
+  <ItemGroup>
+    <Compile Include="..\RyuoBrightnessFix\Models\AppConstants.cs" Link="Shared\AppConstants.cs" />
+    <Compile Include="..\RyuoBrightnessFix\Models\AppSettings.cs" Link="Shared\AppSettings.cs" />
+    <Compile Include="..\RyuoBrightnessFix\Models\PanelVideoEntry.cs" Link="Shared\PanelVideoEntry.cs" />
+    <Compile Include="..\RyuoBrightnessFix\Models\VideoScaleMode.cs" Link="Shared\VideoScaleMode.cs" />
+    <Compile Include="..\RyuoBrightnessFix\Models\PanelControlProtocol.cs" Link="Shared\PanelControlProtocol.cs" />
+    <Compile Include="..\RyuoBrightnessFix\Services\BacklightService.cs" Link="Shared\BacklightService.cs" />
+    <Compile Include="..\RyuoBrightnessFix\Services\SystemMetricsService.cs" Link="Shared\SystemMetricsService.cs" />
+    <Compile Include="..\RyuoBrightnessFix\Services\PanelRecoveryService.cs" Link="Shared\PanelRecoveryService.cs" />
+  </ItemGroup>
+
+</Project>
