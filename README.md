@@ -3,9 +3,16 @@
 Take full control of the **ASUS ROG Ryuo IV** AIO LCD — **brightness that actually holds**
 and **any video you like on the panel** — without ASUS Info Hub running.
 
-A small Windows (.NET 8 / WPF) tray app that speaks the panel's **native USB‑HID protocol**
-directly, keeps the screen alive, plays your video, and **heals every failure mode the panel
-firmware throws at it** — automatically.
+Two parts (.NET 8), both speaking the panel's **native USB‑HID protocol** directly:
+
+- a **Windows Service** (`RyuoPanelService`, runs as LocalSystem) that keeps the screen alive,
+  plays your video, streams metrics, and **heals every failure mode the panel firmware throws
+  at it** — automatically, from boot, with no one logged in. The **Service Control Manager**
+  restarts it if it ever stops, and it **survives Windows Update** (it comes back on its own,
+  no logon required);
+- a small **WPF window** to configure it (brightness, video library, metric widgets). When the
+  service is installed the window is a thin **client** — it edits settings and shows status and
+  never touches the panel itself, so the two never fight over the device.
 
 **Example: a custom video looping on the Ryuo IV at 100% brightness, with live metric
 widgets (CPU/GPU temperature, CPU usage, AIO pump RPM, motherboard temperature, clock):**
@@ -38,19 +45,25 @@ widgets (CPU/GPU temperature, CPU usage, AIO pump RPM, motherboard temperature, 
   telemetry Info Hub streams, reverse‑engineered (`STATE all` snapshots every 3 s) and fed
   from LibreHardwareMonitor. Picked from **category chips right next to the screen preview**
   (with title/content color controls), and mirrored live onto the preview so you see the
-  exact values the cooler is displaying. Full sensor set (CPU temp, fan RPM) needs the app
-  run as administrator; loads/GPU/memory/disk/network work without. With **Start with
-  Windows** ticked, run the app as administrator **once** and it registers an elevated Task
-  Scheduler logon task — from then on it auto‑starts as administrator on every boot, no UAC
-  prompt.
-- **Survives everything.** Panel reboots, USB re‑enumeration, PC sleep, firmware wedges — the
-  app detects each one and restores both brightness *and* your video with no interaction:
+  exact values the cooler is displaying. The service runs as **LocalSystem**, so it always has
+  the ring‑0 access CPU temperature and fan RPMs need — no UAC, no "run as administrator" dance.
+  (GPU sensors are deliberately off: LibreHardwareMonitor's native NVIDIA path can crash the
+  process after a driver reset. A crash would just get an SCM restart now, but not needing one
+  is better.)
+- **Runs from boot and survives everything.** Installed as a Windows Service, it starts before
+  anyone logs in and is supervised by the OS: the **SCM restarts it on failure** (5 s → 30 s →
+  60 s backoff) and it **comes back on its own after Windows Update** closes it. Panel reboots,
+  USB re‑enumeration, PC sleep, firmware wedges — it detects each and restores both brightness
+  *and* your video with no interaction:
   - HID sessions **self‑heal** (failed writes reopen the session and retry);
-  - the panel is **re‑detected on USB hot‑plug**;
+  - the panel is **re‑detected on USB** (the service polls for arrival/removal);
   - a **wedged firmware is un‑wedged automatically** (see below);
+  - **resume from sleep** is caught via the service's `OnPowerEvent`, which then restarts the
+    panel's `SerialService` and re‑applies — deterministically, every wake;
   - the **video is re‑asserted** whenever the panel reconnects, because the panel forgets its
     screen config on every reboot and would otherwise sit on a black screen.
-- Tray app: start with Windows, start minimized, click‑to‑copy version, rolling logs.
+- Config UI: brightness, video library, metric widgets, rolling logs — a thin client of the
+  service, or a standalone tray app when the service isn't installed.
 
 ---
 
@@ -166,10 +179,13 @@ ASUS's stock videos. Wider than 1920 is rejected by the hardware decoder (black 
 
 - Windows 10/11, **.NET 8** runtime (or the SDK to build).
 - The Ryuo IV AIO connected over USB.
-- **No admin rights; ASUS Info Hub doesn't need to run.** The app talks to the HID interface
-  directly via [HidSharp](https://www.nuget.org/packages/HidSharp). Info Hub's **installed
-  files** are still wanted: its bundled `adb.exe` is used to upload videos and to un‑wedge
-  the panel firmware automatically (without it, recovery falls back to "power‑cycle the PC").
+- **Admin rights once, to install the service** (`RyuoPanelService.exe install` from an
+  elevated prompt). After that the service runs as LocalSystem and needs nothing further; the
+  config UI runs unelevated. ASUS Info Hub doesn't need to run — the panel is driven over its
+  HID interface directly via [HidSharp](https://www.nuget.org/packages/HidSharp). Info Hub's
+  **installed files** are still wanted: its bundled `adb.exe` is used to upload videos and to
+  un‑wedge the panel firmware automatically (without it, recovery falls back to "power‑cycle
+  the PC").
 - `ffmpeg.exe` next to the app for the Video feature (run `tools\fetch-ffmpeg.ps1` once; the
   binary is git‑ignored and bundled into builds automatically).
 
@@ -177,7 +193,15 @@ ASUS's stock videos. Wider than 1920 is rejected by the hardware decoder (black 
 
 ## Using it
 
-1. Build (below) and run `RyuoBrightnessFix.exe`.
+1. Build (below), then **install the service** from an elevated prompt:
+   ```powershell
+   src\RyuoPanelService\bin\Release\net8.0-windows\RyuoPanelService.exe install
+   ```
+   It starts immediately, starts at every boot, and takes over the panel. (`… uninstall` to
+   remove it.) The installer migrates any existing per‑user settings/video cache into the
+   shared `%ProgramData%\RyuoBrightnessFix` and disables the old tray‑app autostart so the two
+   can't clash. Then run `RyuoBrightnessFix.exe` to configure it — the window will say
+   *"driven by the background service"* and every change is applied by the service.
 2. **Brightness** tab: drag the slider and click **Apply** (or **100%**). Keep
    **"Hold brightness"** ticked (default) — this opens the HID session, drains the device
    stream, and re‑applies your level so the panel doesn't dim itself.
@@ -207,29 +231,43 @@ version (click to copy).
 
 ## How it works
 
+Two processes share one root of settings/logs at `%ProgramData%\RyuoBrightnessFix\`, and share
+the device‑driving code by linked source (it is UI‑free, so it compiles into both).
+
+**`RyuoPanelService`** — the headless daemon (LocalSystem Windows Service):
+
 | Piece | Role |
 |-------|------|
-| `BacklightService` | Talks the USB‑HID protocol via HidSharp. Opens a **persistent session** with a background **read‑drain** thread to keep the panel awake; `SetPercent(p)` / `SetPanelVideo(f)` send framed commands over it. Sessions **self‑heal** (a failed write reopens and retries), HID **hot‑plug** events re‑detect the panel, and the time since the last device report is tracked as the wedge signal. |
+| `PanelDaemon` | The always‑on orchestrator: the 3‑second brightness keep‑alive, metrics streaming, wedge detection, **panel‑state re‑assert** (video + brightness on every session open), and reloading settings when the config UI changes them. Polls for USB arrival/removal (a session‑0 service gets no window‑message hot‑plug events). |
+| `RyuoPanelWindowsService` | The `ServiceBase` host. Resume is caught via **`OnPowerEvent`** — reliable in session 0, unlike the `SystemEvents` a tray app uses — and drives the adb un‑wedge + re‑apply on every wake. |
+| `PipeControlServer` | Named‑pipe control channel (`STATUS` / `RELOAD`) the config UI connects to; ACL'd so the unelevated UI can reach the LocalSystem service. |
+| `ServiceControl` | `install` / `uninstall` via `sc.exe`, including the **SCM recovery policy** (restart on failure, 5 s → 30 s → 60 s) — the OS is the supervisor. |
+| `BacklightService` | Talks the USB‑HID protocol via HidSharp. Opens a **persistent session** with a background **read‑drain** thread to keep the panel awake; `SetPercent(p)` / `SetPanelPlaylist(…)` send framed commands over it. Sessions **self‑heal** (a failed write reopens and retries), and time since the last device report is the wedge signal. |
 | `PanelRecoveryService` | Un‑wedges the panel firmware: restarts the on‑device `SerialService` via ASUS's bundled `adb.exe` when writes succeed but the panel has gone silent. |
-| `MediaService` | The Video pipeline: ffmpeg transcode (1920×960, scale mode applied), adb push to `/sdcard/pcMedia`, HID activation. |
 | `SystemMetricsService` | Collects live sensors via LibreHardwareMonitor and renders the `STATE all` JSON snapshot the panel's widgets consume. |
-| `MainViewModel` | Slider/Apply, the 3‑second keep‑alive, wedge detection, hot‑plug refresh, **panel‑state re‑assert** (video + brightness on every session open), Video tab, and settings. |
-| `ResumeMonitor` | On resume from sleep, re‑applies the target promptly (the wedge detector handles the firmware's post‑sleep state a few seconds later). |
-| `StartupRegistrationService` | "Start with Windows" via the per‑user `HKCU\…\Run` key — or, once the app has run elevated, via a **Task Scheduler logon task with highest privileges** (auto‑starts as administrator, no UAC prompt). Self‑heals stale exe paths on every start. |
-| `TrayIconService` | System‑tray icon + menu (open / restore brightness / exit). |
-| Diagnostics | Toggle **verbose debug logging** in Settings; logs to `%APPDATA%\RyuoBrightnessFix\logs\`, with an "Open logs folder" button. |
+
+**`RyuoBrightnessFix`** — the WPF config UI:
+
+| Piece | Role |
+|-------|------|
+| `MainViewModel` | The Brightness / Video / Settings tabs. When the service is installed it runs in **client mode**: it never opens a HID hold; brightness/playlist/metric edits are written to `settings.json` and applied by sending the service a pipe `RELOAD`. Standalone (no service) it drives the panel itself, as the app always did. |
+| `ServiceClient` | Detects the installed service and talks to it over the control pipe. |
+| `MediaService` | The Video pipeline: ffmpeg transcode (1920×960, scale mode applied), adb push to `/sdcard/pcMedia` — this stays UI‑side (adb is a separate interface, so it never clashes with the service's HID hold). |
+| `StartupRegistrationService` / `TrayIconService` | Optional "Start with Windows" (`HKCU\…\Run`) + system‑tray icon for the config UI. Autostart is no longer needed for the panel itself — the service handles that. |
+| Diagnostics | **Verbose debug logging** toggle; both processes log to `%ProgramData%\RyuoBrightnessFix\logs\`, with an "Open logs folder" button. |
 
 ---
 
 ## Caveats / limitations
 
 - **Don't run this and ASUS Info Hub at the same time.** They use the same USB‑HID channel
-  and will fight over it. Use one or the other.
+  and will fight over it. Use one or the other. (The service and the config UI *don't* clash —
+  the UI defers to the service and never takes the HID.)
 - **During real sleep the panel still dims — and wedges.** While the PC is suspended nothing
-  can read the panel's stream, so the firmware dims it *and* wedges its HID handle. On wake,
-  the app's wedge detection notices the silent panel within ~30–45 s and restarts the panel's
-  `SerialService` over adb, after which brightness and the video re‑apply automatically.
-  Expect up to a minute of dim panel after wake. Keeping it bright *through* sleep isn't
+  can read the panel's stream, so the firmware dims it *and* wedges its HID handle. On wake the
+  service's `OnPowerEvent` fires immediately, restarts the panel's `SerialService` over adb, and
+  re‑applies brightness + video — deterministically, every wake (no detection delay to wait out).
+  Expect a few seconds of dim panel after wake. Keeping it bright *through* sleep isn't
   achievable from the host (the device's own `displayInSleep` flag has unwanted side effects).
 - **Brightness is held, not persisted.** The device's own saved value isn't rewritten by the
   brightness command, so holding relies on the app's keep‑alive re‑applying it.
@@ -241,15 +279,19 @@ version (click to copy).
 ## Build
 
 ```powershell
-dotnet build RyuoBrightnessFix.sln -c Release
-powershell -File tools\fetch-ffmpeg.ps1   # once, for the Video feature
+dotnet build RyuoBrightnessFix.sln -c Release   # builds both projects
+powershell -File tools\fetch-ffmpeg.ps1          # once, for the Video feature
 ```
 
-Output: `src\RyuoBrightnessFix\bin\Release\net8.0-windows\RyuoBrightnessFix.exe`.
+Output:
+- Service: `src\RyuoPanelService\bin\Release\net8.0-windows\RyuoPanelService.exe`
+  (`install` / `uninstall` from an elevated prompt).
+- Config UI: `src\RyuoBrightnessFix\bin\Release\net8.0-windows\RyuoBrightnessFix.exe`.
 
-Dependencies (restored automatically): WPF, **HidSharp** (USB‑HID), **Microsoft.Win32.SystemEvents**
-(resume detection), **Serilog** (logging). ffmpeg and ASUS's adb are external tools invoked
-by the Video / recovery features.
+Dependencies (restored automatically): WPF, **HidSharp** (USB‑HID), **LibreHardwareMonitorLib**
+(sensors), **System.ServiceProcess.ServiceController** (the Windows Service +
+`ServiceController`), **Microsoft.Win32.SystemEvents**, **Serilog** (logging). ffmpeg and
+ASUS's adb are external tools invoked by the Video / recovery features.
 
 ---
 
