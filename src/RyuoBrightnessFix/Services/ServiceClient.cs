@@ -58,6 +58,16 @@ public sealed class ServiceClient
         catch (Exception ex) { _log.Debug(ex, "Parsing service status failed."); return null; }
     }
 
+    /// <summary>Fetch the current widget values (token → display string) the panel is showing, so
+    /// the UI preview mirrors them, or null if the service isn't reachable.</summary>
+    public IReadOnlyDictionary<string, string>? GetWidgetValues()
+    {
+        string? resp = Send(PanelControlProtocol.CmdWidgets);
+        if (string.IsNullOrWhiteSpace(resp) || resp.StartsWith("ERR", StringComparison.Ordinal)) return null;
+        try { return JsonSerializer.Deserialize<Dictionary<string, string>>(resp); }
+        catch (Exception ex) { _log.Debug(ex, "Parsing widget values failed."); return null; }
+    }
+
     private string? Send(string command)
     {
         try

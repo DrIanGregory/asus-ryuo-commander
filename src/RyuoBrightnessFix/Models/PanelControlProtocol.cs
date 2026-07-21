@@ -17,6 +17,10 @@ public static class PanelControlProtocol
     /// <summary>Re-read settings.json and re-apply the panel state immediately. Response: "OK".</summary>
     public const string CmdReload = "RELOAD";
 
+    /// <summary>Return the current formatted widget values (JSON token→display string) for the
+    /// enabled metric slots, so the config UI's preview mirrors what the panel is showing.</summary>
+    public const string CmdWidgets = "WIDGETS";
+
     public const string Ok = "OK";
 }
 

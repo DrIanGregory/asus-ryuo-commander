@@ -1080,14 +1080,33 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         else app.Dispatcher.BeginInvoke(Rebuild);
     }
 
-    /// <summary>Push the latest sensor readings into the preview overlays.</summary>
+    /// <summary>Push the latest sensor readings into the preview overlays. In client mode the
+    /// service owns the sensors, so fetch the values it's rendering on the panel over the pipe;
+    /// standalone, read our own metrics service.</summary>
     private void RefreshOverlayValues()
     {
+        if (MetricOverlays.Count == 0) return;
+
+        if (_serviceMode)
+        {
+            Task.Run(() =>
+            {
+                var values = _serviceClient.GetWidgetValues();
+                if (values is null || values.Count == 0) return;
+                Application.Current?.Dispatcher.BeginInvoke(() =>
+                {
+                    foreach (var overlay in MetricOverlays)
+                        if (values.TryGetValue(overlay.Title, out var v)) overlay.Value = v;
+                });
+            });
+            return;
+        }
+
         var metrics = _metrics;
-        if (metrics is null || MetricOverlays.Count == 0) return;
-        var values = metrics.GetWidgetValues(MetricOverlays.Select(o => o.Title));
+        if (metrics is null) return;
+        var vals = metrics.GetWidgetValues(MetricOverlays.Select(o => o.Title));
         foreach (var overlay in MetricOverlays)
-            if (values.TryGetValue(overlay.Title, out var v)) overlay.Value = v;
+            if (vals.TryGetValue(overlay.Title, out var v)) overlay.Value = v;
     }
 
     public System.Windows.Media.Brush MetricTitleBrush => MakeBrush(_settings.MetricTitleColor);
@@ -1190,6 +1209,20 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         RebuildMetricOverlays();
         UpdateMetricsStreaming();
+
+        // In client mode there's no local metrics tick to refresh the preview overlays, so poll
+        // the service for the values it's showing on the panel.
+        if (_serviceMode) StartClientOverlayPolling();
+    }
+
+    private System.Windows.Threading.DispatcherTimer? _clientOverlayTimer;
+
+    private void StartClientOverlayPolling()
+    {
+        _clientOverlayTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+        _clientOverlayTimer.Tick += (_, _) => RefreshOverlayValues();
+        _clientOverlayTimer.Start();
+        RefreshOverlayValues();   // fill immediately rather than waiting a tick
     }
 
     private void AddMetricGroup(string name, params (string Token, string Label)[] chips)
@@ -1639,6 +1672,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _metrics = null;
         _slotPushDebounce?.Stop();
         _slotPushDebounce = null;
+        _clientOverlayTimer?.Stop();
+        _clientOverlayTimer = null;
         _backlight.SessionOpened -= OnSessionOpened;
         _backlight.DeviceListChanged -= OnDeviceListChanged;
         _deviceChangeDebounce?.Stop();

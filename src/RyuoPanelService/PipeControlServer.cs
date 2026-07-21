@@ -105,6 +105,9 @@ public sealed class PipeControlServer : IDisposable
             return PanelControlProtocol.Ok;
         }
 
+        if (command.Equals(PanelControlProtocol.CmdWidgets, StringComparison.OrdinalIgnoreCase))
+            return _daemon.GetWidgetValuesJson();
+
         return "ERR unknown command";
     }
 

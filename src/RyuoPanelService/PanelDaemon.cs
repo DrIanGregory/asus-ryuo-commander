@@ -411,6 +411,22 @@ public sealed class PanelDaemon : IDisposable
         }
     }
 
+    /// <summary>Current formatted widget values (token → display string, e.g. "45 °C") for the
+    /// enabled metric slots, so the UI preview shows exactly what the panel is displaying. Empty
+    /// until the first metrics poll has run (or when metrics are off / sensors unavailable).</summary>
+    public string GetWidgetValuesJson()
+    {
+        IReadOnlyDictionary<string, string> values;
+        lock (_sync)
+        {
+            var tokens = _settings.MetricSlots.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray();
+            values = _metrics is not null && tokens.Length > 0
+                ? _metrics.GetWidgetValues(tokens)
+                : new Dictionary<string, string>();
+        }
+        return System.Text.Json.JsonSerializer.Serialize(values);
+    }
+
     /// <summary>The config UI wrote new settings and asked the daemon to apply them now, rather
     /// than waiting for the periodic settings poll.</summary>
     public void ApplyExternalReload()
